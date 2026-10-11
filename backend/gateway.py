@@ -54,6 +54,8 @@ DEFAULT_CONFIG = {
         "none": None,
     },
     "zero_llm_mode": False,
+    # Data-sovereignty: tiers mapped True must stay on-prem (custom provider only).
+    "sovereignty": {"T0": True, "T1": True, "T2": False, "T3": False, "T4": False},
 }
 
 SYSTEM_PROMPTS = {
@@ -91,12 +93,17 @@ async def get_config(db=None) -> dict:
     if not doc:
         return DEFAULT_CONFIG
     profiles = {**DEFAULT_CONFIG["capability_profiles"], **(doc.get("capability_profiles") or {})}
-    return {"capability_profiles": profiles, "zero_llm_mode": bool(doc.get("zero_llm_mode", False))}
+    sovereignty = {**DEFAULT_CONFIG["sovereignty"], **(doc.get("sovereignty") or {})}
+    return {"capability_profiles": profiles, "zero_llm_mode": bool(doc.get("zero_llm_mode", False)),
+            "sovereignty": sovereignty}
 
 
-async def save_config(db, capability_profiles: dict, zero_llm_mode: bool) -> dict:
+async def save_config(db, capability_profiles: dict, zero_llm_mode: bool, sovereignty: dict = None) -> dict:
+    current = await get_config(db)
     doc = {"id": "default", "capability_profiles": capability_profiles,
-           "zero_llm_mode": bool(zero_llm_mode), "updated_at": datetime.now(timezone.utc).isoformat()}
+           "zero_llm_mode": bool(zero_llm_mode),
+           "sovereignty": sovereignty if sovereignty is not None else current["sovereignty"],
+           "updated_at": datetime.now(timezone.utc).isoformat()}
     await db.harness_config.update_one({"id": "default"}, {"$set": doc}, upsert=True)
     return doc
 
@@ -196,7 +203,7 @@ async def complete(task: str, masked_input: str, capability_profile: str, db=Non
     return await _dispatch(system, masked_input, profile, task, base, db, zero)
 
 
-async def complete_agent(agent_id: str, task: str, masked_input: str, level: int = 1, db=None) -> dict:
+async def complete_agent(agent_id: str, task: str, masked_input: str, level: int = 1, db=None, tier: str = None) -> dict:
     agent = agent_profiles.get_agent(agent_id)
     if not agent:
         return {"text": "Unknown agent.", "model_used": "none", "mode": "error", "latency_ms": 0}
@@ -205,7 +212,7 @@ async def complete_agent(agent_id: str, task: str, masked_input: str, level: int
     role = agent.get("harness_role", "maker")
     profile = cfg["capability_profiles"].get(role)
     base = {"id": str(uuid4()), "task": task or "agent_assessment", "agent_id": agent_id, "level": int(level),
-            "capability_profile": role, "masked_input_hash": _hash(masked_input),
+            "capability_profile": role, "tier": tier, "masked_input_hash": _hash(masked_input),
             "timestamp": datetime.now(timezone.utc).isoformat()}
 
     # Deterministic agents never invoke a model.
@@ -216,6 +223,17 @@ async def complete_agent(agent_id: str, task: str, masked_input: str, level: int
                              "mode": "deterministic", "output_hash": _hash(text), "latency_ms": 0})
         return {"text": text, "model_used": "deterministic-agent", "mode": "deterministic", "latency_ms": 0,
                 "capability_profile": role}
+
+    # Data-sovereignty: a regulated tier must stay on-prem (custom provider only).
+    requires_local = bool(tier and cfg.get("sovereignty", {}).get(tier))
+    if requires_local and (profile is None or profile.get("provider") in CLOUD_PROVIDERS):
+        text = (f"[Sovereignty block] {tier} data must stay on-prem. Role '{role}' is mapped to a cloud "
+                f"provider ('{(profile or {}).get('provider')}'), so no external call was made. Point this role "
+                f"at a local OpenAI-compatible endpoint to process {tier} data. Deterministic advisory only.")
+        await _log_call(db, {**base, "provider": "none", "model_used": "sovereignty-blocked",
+                             "mode": "sovereignty-blocked", "output_hash": _hash(text), "latency_ms": 0})
+        return {"text": text, "model_used": "sovereignty-blocked", "mode": "sovereignty-blocked",
+                "latency_ms": 0, "capability_profile": role}
 
     zero = (f"Zero-LLM mode: {agent['name']} ({agent_id}, role={role}) would assess the masked input and return "
             f"an advisory finding with a PASS / FAIL / NOT ASSESSED verdict and cited evidence. No model was called.")

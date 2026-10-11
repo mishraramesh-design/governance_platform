@@ -45,6 +45,22 @@ LLM via Emergent universal key. User explicitly wants an ENTERPRISE build, not a
 - Both pages render (EY theme), audit log populates.
 
 ## Backlog / next
+- **2026-06-11 — MLOps layer + clear-key + sovereignty. DONE + verified:**
+  - **MLOps / Learning Harness** (`/mlops`, `routers/mlops.py` + `evaluator.py`): governed
+    registry (30 entries — 22 prompt packs, 4 model bindings, 4 detector rule-packs) with
+    versions + states (candidate/shadow/promoted/retired); evaluation harness with labelled
+    golden sets + seeded canaries → precision/recall/F1 + canary recall + drift vs baseline;
+    **promotion gate** (rule-pack F1 ≥ 0.8, else 400); live governance metrics (zero-LLM share,
+    not-assessed rate, L1/L2 disagreement, noise ratio). Every evaluate/promote appended to ledger.
+  - **Clear-key control**: `__clear__` sentinel wipes a stored key (reverts to Emergent key);
+    UI button per role. Verified.
+  - **Sovereignty routing**: config `sovereignty` {T0..T4}; `complete_agent(tier=...)` blocks a
+    regulated tier on a cloud provider (mode `sovereignty-blocked`) unless the role is on a local
+    custom endpoint. Engine passes finding tier into L2 model review. UI section in Model Settings
+    + tier selector in Harness sandbox. Verified (T1 blocked on gemini, T2 allowed).
+
+- P1: Deep-dive remaining stages; replace NOT_ASSESSED control stubs with real detectors.
+- P2: routing matrix page; Stack Profiler onboarding; shadow-mode A/B for registry candidates.
 - **2026-06-11 — Four-role gateway + on-prem + Agent Flow. DONE + verified:**
   - Replaced primary/independent-reviewer with four capability roles **Maker / Checker /
     Security / Verifier** (agent_profiles `_AGENT_ROLE`: Maker 9, Checker 4, Security 5,

@@ -302,7 +302,7 @@ async def apply_level2(db, control, finding):
         # Route through the paired L2 agent's persona when it uses a model; otherwise
         # fall back to the independent-reviewer profile (a different model family).
         if l2_agent and l2_agent.get("uses_llm"):
-            gw = await gateway.complete_agent(l2_id, "l2_independent_review", prompt, level=2, db=db)
+            gw = await gateway.complete_agent(l2_id, "l2_independent_review", prompt, level=2, db=db, tier=finding.get("tier"))
         else:
             gw = await gateway.complete("l2_independent_review", prompt, "checker", db=db)
         l2_text = gw["text"]

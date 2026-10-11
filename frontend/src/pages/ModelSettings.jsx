@@ -86,14 +86,26 @@ function RoleEditor({ name, profile, config, roleCount, onChange }) {
         <span className="text-[10px] uppercase tracking-wider text-gray-400">
           API key {profile?.api_key_set ? "· stored" : config.emergent_key_available && !isCustom ? "· optional (falls back to Emergent key)" : ""}
         </span>
-        <input
-          data-testid={`role-key-${name}`}
-          type="password"
-          value={profile?.api_key === "__stored__" ? "" : (profile?.api_key || "")}
-          onChange={(e) => onChange(name, { ...profile, api_key: e.target.value })}
-          placeholder={profile?.api_key_set ? "•••••••• (leave blank to keep)" : "paste key…"}
-          className="w-full mt-0.5 text-sm border border-gray-300 px-2 py-1.5 bg-white font-mono focus:outline-none focus:ring-2 focus:ring-[#FFE600]"
-        />
+        <div className="flex gap-1.5 mt-0.5">
+          <input
+            data-testid={`role-key-${name}`}
+            type="password"
+            value={profile?.api_key === "__stored__" || profile?.api_key === "__clear__" ? "" : (profile?.api_key || "")}
+            onChange={(e) => onChange(name, { ...profile, api_key: e.target.value })}
+            placeholder={profile?.api_key === "__clear__" ? "will revert to Emergent key on save" : profile?.api_key_set ? "•••••••• (leave blank to keep)" : "paste key…"}
+            className="flex-1 text-sm border border-gray-300 px-2 py-1.5 bg-white font-mono focus:outline-none focus:ring-2 focus:ring-[#FFE600]"
+          />
+          {(profile?.api_key_set || (profile?.api_key && profile.api_key !== "__clear__")) && (
+            <button
+              type="button"
+              data-testid={`role-clearkey-${name}`}
+              onClick={() => onChange(name, { ...profile, api_key: "__clear__", api_key_set: false })}
+              className="text-[10px] uppercase font-bold border border-gray-400 px-2 hover:border-black hover:text-black text-gray-600"
+            >
+              Clear / use Emergent key
+            </button>
+          )}
+        </div>
       </label>
 
       <label className="flex items-center gap-2 text-xs text-gray-600" data-testid={`role-localonly-${name}`}>
@@ -120,10 +132,11 @@ export default function ModelSettings() {
 
   const [profiles, setProfiles] = useState(null);
   const [zeroLlm, setZeroLlm] = useState(false);
+  const [sovereignty, setSovereignty] = useState(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (config) { setProfiles(config.capability_profiles); setZeroLlm(config.zero_llm_mode); }
+    if (config) { setProfiles(config.capability_profiles); setZeroLlm(config.zero_llm_mode); setSovereignty(config.sovereignty); }
   }, [config]);
 
   const onChange = (name, prof) => setProfiles((p) => ({ ...p, [name]: prof }));
@@ -131,7 +144,7 @@ export default function ModelSettings() {
   const save = async () => {
     setSaving(true);
     try {
-      await api.put("/harness/config", { capability_profiles: profiles, zero_llm_mode: zeroLlm });
+      await api.put("/harness/config", { capability_profiles: profiles, zero_llm_mode: zeroLlm, sovereignty });
       qc.invalidateQueries({ queryKey: ["harness-config"] });
       qc.invalidateQueries({ queryKey: ["agent-flow"] });
       toast.success("Gateway configuration saved");
@@ -158,6 +171,21 @@ export default function ModelSettings() {
         {config.roles.map((r) => (
           <RoleEditor key={r} name={r} profile={profiles[r]} config={config} roleCount={byRole[r]} onChange={onChange} />
         ))}
+      </div>
+
+      <div className="border border-gray-200 p-4 mb-4" data-testid="sovereignty-section">
+        <div className="font-[Chivo] font-bold text-sm mb-1">Data Sovereignty Routing</div>
+        <p className="text-xs text-gray-500 mb-3 max-w-2xl">Tiers marked <span className="font-bold">on-prem required</span> may only be processed by a role pointed at a local (custom) endpoint. If the role is on a cloud provider, the call is blocked and falls back to deterministic advisory — regulated data never leaves on-prem.</p>
+        <div className="grid grid-cols-5 gap-2">
+          {["T0", "T1", "T2", "T3", "T4"].map((t) => (
+            <label key={t} data-testid={`sovereignty-${t}`} className={`border p-2 cursor-pointer text-center ${sovereignty?.[t] ? "border-black bg-gray-50" : "border-gray-200"}`}>
+              <div className="font-mono text-xs font-bold">{t}</div>
+              <div className="text-[9px] uppercase tracking-wider text-gray-400 mb-1">{t === "T0" ? "secrets" : t === "T1" ? "high-risk PII" : t === "T2" ? "other PII" : t === "T3" ? "confidential" : "public"}</div>
+              <input type="checkbox" checked={!!sovereignty?.[t]} onChange={(e) => setSovereignty((s) => ({ ...s, [t]: e.target.checked }))} className="accent-black" />
+              <div className="text-[9px] text-gray-500 mt-0.5">{sovereignty?.[t] ? "on-prem only" : "cloud ok"}</div>
+            </label>
+          ))}
+        </div>
       </div>
 
       <div className="border border-gray-200 p-4 flex items-center justify-between mb-6" data-testid="zero-llm-toggle">

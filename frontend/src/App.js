@@ -11,6 +11,7 @@ import Agents from "@/pages/Agents";
 import AgentHarness from "@/pages/AgentHarness";
 import AgentFlow from "@/pages/AgentFlow";
 import ModelSettings from "@/pages/ModelSettings";
+import Mlops from "@/pages/Mlops";
 import Controls from "@/pages/Controls";
 import Gates from "@/pages/Gates";
 import AIGovernance from "@/pages/AIGovernance";
@@ -40,6 +41,7 @@ function App() {
               <Route path="/harness" element={<AgentHarness />} />
               <Route path="/agent-flow" element={<AgentFlow />} />
               <Route path="/model-settings" element={<ModelSettings />} />
+              <Route path="/mlops" element={<Mlops />} />
               <Route path="/controls" element={<Controls />} />
               <Route path="/gates" element={<Gates />} />
               <Route path="/ai-governance" element={<AIGovernance />} />

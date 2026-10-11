@@ -16,12 +16,14 @@ _SECRET = "__stored__"  # placeholder returned instead of a real key
 class ConfigUpdate(BaseModel):
     capability_profiles: dict
     zero_llm_mode: bool = False
+    sovereignty: dict | None = None
 
 
 class SandboxRun(BaseModel):
     agent_id: str
     masked_input: str
     level: int = 1
+    tier: str | None = None
 
 
 @router.get("/agents")
@@ -95,6 +97,7 @@ async def get_config():
     return {
         "capability_profiles": profiles,
         "zero_llm_mode": cfg["zero_llm_mode"],
+        "sovereignty": cfg["sovereignty"],
         "available_models": gateway.AVAILABLE_MODELS,
         "providers": list(gateway.AVAILABLE_MODELS.keys()),
         "roles": agent_profiles.HARNESS_ROLES,
@@ -123,10 +126,12 @@ async def put_config(body: ConfigUpdate):
                 raise HTTPException(400, f"role '{name}': custom provider needs a model name")
         elif model not in gateway.AVAILABLE_MODELS[provider]:
             raise HTTPException(400, f"model '{model}' not available for provider '{provider}'")
-        # preserve stored key if the UI sent the placeholder or blank-with-existing
+        # key: '__clear__' wipes the stored key (revert to Emergent); '' or placeholder keeps it
         incoming_key = prof.get("api_key") or ""
         old = current["capability_profiles"].get(name) or {}
-        if incoming_key in ("", _SECRET):
+        if incoming_key == "__clear__":
+            key = ""
+        elif incoming_key in ("", _SECRET):
             key = old.get("api_key", "")
         else:
             key = incoming_key
@@ -136,16 +141,16 @@ async def put_config(body: ConfigUpdate):
             "local_only": bool(prof.get("local_only", False)),
         }
     result["none"] = None
-    saved = await gateway.save_config(db, result, body.zero_llm_mode)
+    saved = await gateway.save_config(db, result, body.zero_llm_mode, body.sovereignty)
     return {"capability_profiles": {k: _public_profile(v) for k, v in saved["capability_profiles"].items()},
-            "zero_llm_mode": saved["zero_llm_mode"]}
+            "zero_llm_mode": saved["zero_llm_mode"], "sovereignty": saved["sovereignty"]}
 
 
 @router.post("/sandbox")
 async def sandbox(body: SandboxRun):
     if body.level not in (1, 2):
         raise HTTPException(400, "level must be 1 or 2")
-    return await gateway.complete_agent(body.agent_id, "sandbox_assessment", body.masked_input, body.level, db=db)
+    return await gateway.complete_agent(body.agent_id, "sandbox_assessment", body.masked_input, body.level, db=db, tier=body.tier)
 
 
 @router.get("/llm-calls")

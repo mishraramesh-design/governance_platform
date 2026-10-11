@@ -13,6 +13,7 @@ const NAV = [
       { to: "/harness", label: "Agent Harness", testId: "nav-harness" },
       { to: "/agent-flow", label: "Agent Flow", testId: "nav-agent-flow" },
       { to: "/model-settings", label: "Model Gateway Settings", testId: "nav-model-settings" },
+      { to: "/mlops", label: "MLOps · Learning Harness", testId: "nav-mlops" },
       { to: "/controls", label: "Control Catalog", testId: "nav-controls" },
       { to: "/gates", label: "Gate Readiness", testId: "nav-gates" },
       { to: "/ai-governance", label: "AI Governance (ISO 42001)", testId: "nav-ai-governance" },

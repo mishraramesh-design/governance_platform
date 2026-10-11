@@ -6,7 +6,7 @@ import os
 
 from database import db
 import seed_data
-from routers import catalog, projects, events, reports, assurance, dashboard, harness
+from routers import catalog, projects, events, reports, assurance, dashboard, harness, mlops
 
 app = FastAPI(title="SDLC Governance & Assurance Platform")
 api_router = APIRouter(prefix="/api")
@@ -24,6 +24,7 @@ api_router.include_router(reports.router)
 api_router.include_router(assurance.router)
 api_router.include_router(dashboard.router)
 api_router.include_router(harness.router)
+api_router.include_router(mlops.router)
 
 app.include_router(api_router)
 
@@ -43,5 +44,6 @@ logger = logging.getLogger(__name__)
 async def seed_on_startup():
     try:
         await seed_data.ensure_seeded(db)
+        await mlops.ensure_mlops_seeded(db)
     except Exception as e:
         logger.error(f"Seeding failed: {e}")

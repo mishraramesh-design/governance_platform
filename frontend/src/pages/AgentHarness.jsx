@@ -27,6 +27,7 @@ function Sandbox({ agent }) {
     `Masked requirement: "The system shall authenticate a user within ** seconds for **.*% of attempts." Detected fragment: AB****34.`
   );
   const [level, setLevel] = useState(1);
+  const [tier, setTier] = useState("");
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
 
@@ -38,6 +39,7 @@ function Sandbox({ agent }) {
         agent_id: agent.id,
         masked_input: input,
         level,
+        tier: tier || null,
       });
       setResult(r.data);
     } catch (e) {
@@ -83,6 +85,15 @@ function Sandbox({ agent }) {
           >
             {running ? "Running…" : "Run through gateway"}
           </button>
+          <select
+            data-testid="sandbox-tier"
+            value={tier}
+            onChange={(e) => setTier(e.target.value)}
+            className="text-xs border border-gray-300 px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-[#FFE600]"
+          >
+            <option value="">No tier</option>
+            {["T0", "T1", "T2", "T3", "T4"].map((t) => <option key={t} value={t}>Data tier {t}</option>)}
+          </select>
         </div>
         {result && (
           <div className="border border-gray-200" data-testid="sandbox-result">
