@@ -3,6 +3,7 @@ from uuid import uuid4
 from datetime import datetime, timezone
 
 import engine
+import gateway
 
 AGENTS = [
     {"id": "A01", "name": "IV&V Orchestrator", "level": "L1/L2", "sdlc_stage": "Cross-cutting",
@@ -205,6 +206,14 @@ async def ensure_seeded(db):
     if await db.projects.count_documents({}) > 0:
         return
 
+    gateway.FORCE_ZERO_LLM = True  # keep bulk demo seeding fast and free
+    try:
+        await _seed(db)
+    finally:
+        gateway.FORCE_ZERO_LLM = False
+
+
+async def _seed(db):
     await db.agents.insert_many([dict(a) for a in AGENTS])
     await db.controls.insert_many([dict(c) for c in CONTROLS])
     await db.ai_governance.insert_many([dict(c) for c in AI_GOV_CONTROLS])

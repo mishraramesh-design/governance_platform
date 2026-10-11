@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
+# Set True by the seeder so bulk demo generation stays fast and free (deterministic).
+FORCE_ZERO_LLM = False
+
 # Catalogue of models selectable per capability profile (mirrors the Emergent
 # universal-key provider list). Exposed to the Model Settings UI.
 AVAILABLE_MODELS = {
@@ -168,7 +171,7 @@ async def complete(task: str, masked_input: str, capability_profile: str, db=Non
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
-    if cfg["zero_llm_mode"] or profile is None or not _resolve_key(profile.get("provider", "")):
+    if cfg["zero_llm_mode"] or FORCE_ZERO_LLM or profile is None or not _resolve_key(profile.get("provider", "")):
         text = _ZERO_LLM_TASK_TEXT.get(task, "Zero-LLM mode: deterministic output, no LLM call was made.")
         rec = {**base, "provider": "none", "model_used": "zero-llm-deterministic",
                "mode": "zero-llm", "output_hash": _hash(text), "latency_ms": 0}
@@ -227,7 +230,7 @@ async def complete_agent(agent_id: str, task: str, masked_input: str, level: int
         return {"text": text, "model_used": "deterministic-agent", "mode": "deterministic", "latency_ms": 0,
                 "capability_profile": capability_profile}
 
-    if cfg["zero_llm_mode"] or profile is None or not _resolve_key(profile.get("provider", "")):
+    if cfg["zero_llm_mode"] or FORCE_ZERO_LLM or profile is None or not _resolve_key(profile.get("provider", "")):
         text = (
             f"Zero-LLM mode: {agent['name']} ({agent_id}) would assess the masked input and return an "
             f"advisory finding with a PASS / FAIL / NOT ASSESSED verdict and cited evidence. No model was called."

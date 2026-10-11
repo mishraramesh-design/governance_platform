@@ -6,8 +6,34 @@ from uuid import uuid4
 from datetime import datetime, timezone
 
 import gateway
+import agent_profiles
 import ledger as ledger_mod
 from detectors import scan_secrets, scan_pii, scan_logging_leak, static_code_issues, keyed_hash
+
+
+def _l2_for(agent_id):
+    a = agent_profiles.get_agent(agent_id)
+    return a.get("l2_agent_id") if a else None
+
+
+# A05 Security & Privacy guardrail: re-scan T0/T1 data-protection findings with a
+# deterministic re-run and record the independent agreement inline (Level-2).
+DPDP_TAGS = ["DPDP:reasonable_security_safeguards", "DPDP:retention_erasure", "DPDP:breach_notification"]
+
+
+def _apply_a05_rescan(finding, tier, rescan_hits, original_hits):
+    finding["tier"] = tier
+    finding["l2_agent_id"] = "A05"
+    agree = len(rescan_hits) == len(original_hits)
+    if tier in ("T0", "T1"):
+        finding["level2_status"] = "confirmed_by_A05_rescan" if agree else "disagreement_pending_adjudication"
+        finding["level2_narrative"] = (
+            f"A05 Security & Privacy re-scanned this {tier} finding with an independent deterministic "
+            f"detector run: {'reproduced the same detections (AGREE).' if agree else 'did NOT reproduce - needs human adjudication.'}"
+        )
+    else:
+        finding["level2_status"] = "confirmed_by_recompute"
+        finding["level2_narrative"] = f"Tier {tier}: deterministic recomputation confirmed the Level-1 result."
 
 AMBIGUOUS_TERMS = [
     "should", "may", "etc", "tbd", "possibly", "and/or", "user-friendly",
@@ -56,6 +82,9 @@ def build_finding(project, event, control_id, control_name, agent_id, severity, 
         "control_id": control_id,
         "control_name": control_name,
         "agent_id": agent_id,
+        "l1_agent_id": agent_id,
+        "l2_agent_id": _l2_for(agent_id),
+        "tier": None,
         "severity": severity,
         "confidence": confidence,
         "verdict": verdict,
@@ -94,9 +123,10 @@ async def handle_requirement_quality(db, project, event, source_ref):
         method = "rule-based"
         remedy = "No action required - requirement meets baseline quality bar."
         if verdict == "FAIL":
-            gw = await gateway.complete("requirement_rewrite", r["text"], "primary", db=db)
+            masked = f"Requirement {r['req_id']}: \"{r['text']}\". Detected issues: {'; '.join(issues)}. Propose one testable, measurable rewrite."
+            gw = await gateway.complete_agent("A02", "requirement_rewrite", masked, level=1, db=db)
             remedy = gw["text"]
-            method = "model-assisted" if gw["mode"] == "llm" else "rule-based"
+            method = "model-assisted (A02)" if gw["mode"] == "llm" else "rule-based"
         findings.append(build_finding(
             project, event, "CTRL-01", "Requirement Quality Review", "A02",
             severity=severity, confidence=90, verdict=verdict,
@@ -134,10 +164,12 @@ async def handle_secrets(db, project, event, source_ref):
         return [build_finding(project, event, "CTRL-06", "Secrets Detection", "A05", "low", 95, "PASS",
             "No hardcoded secrets detected in this commit.", ["security", "secrets"], "No action required.",
             commit["commit_id"], "commit", "deterministic_recompute", [])]
-    return [build_finding(project, event, "CTRL-06", "Secrets Detection", "A05", "critical", 98, "FAIL",
+    f = build_finding(project, event, "CTRL-06", "Secrets Detection", "A05", "critical", 98, "FAIL",
         f"{len(hits)} potential secret(s) detected: {', '.join(sorted({h['type'] for h in hits}))}.",
         ["security", "secrets"], "Rotate the exposed credential(s) immediately and move to a secrets manager / environment variables.",
-        commit["commit_id"], "commit", "deterministic_recompute", hits)]
+        commit["commit_id"], "commit", "deterministic_recompute", hits)
+    _apply_a05_rescan(f, "T0", scan_secrets(commit.get("code_snippet", "")), hits)
+    return [f]
 
 
 async def handle_pii(db, project, event, source_ref):
@@ -149,10 +181,15 @@ async def handle_pii(db, project, event, source_ref):
         return [build_finding(project, event, "CTRL-07", "India PII Detection", "A05", "low", 92, "PASS",
             "No India-specific personal data patterns detected in this commit.", ["security", "privacy", "dpdp"],
             "No action required.", commit["commit_id"], "commit", "deterministic_recompute", [])]
-    return [build_finding(project, event, "CTRL-07", "India PII Detection", "A05", "high", 90, "FAIL",
+    high_types = {"pii:aadhaar", "pii:pan", "pii:card_number", "pii:gstin"}
+    tier = "T1" if any(h["type"] in high_types for h in hits) else "T2"
+    f = build_finding(project, event, "CTRL-07", "India PII Detection", "A05", "high", 90, "FAIL",
         f"{len(hits)} potential personal data item(s) detected: {', '.join(sorted({h['type'] for h in hits}))}. DPDP Act 2023 relevance flagged for human review.",
-        ["security", "privacy", "dpdp"], "Remove hardcoded personal data; use masked test fixtures and verify DPDP Act obligations with your privacy officer.",
-        commit["commit_id"], "commit", "deterministic_recompute", hits)]
+        ["security", "privacy", "dpdp"] + DPDP_TAGS,
+        "Remove hardcoded personal data; use masked test fixtures and verify DPDP Act obligations with your privacy officer.",
+        commit["commit_id"], "commit", "deterministic_recompute", hits)
+    _apply_a05_rescan(f, tier, scan_pii(commit.get("code_snippet", "")), hits)
+    return [f]
 
 
 async def handle_logging_leak(db, project, event, source_ref):
@@ -239,6 +276,11 @@ CONTROL_HANDLERS = {
 
 
 async def apply_level2(db, control, finding):
+    # Respect a Level-2 result already set inline by the detector (e.g. A05 re-scan).
+    existing = finding.get("level2_status")
+    if existing and existing != "pending":
+        return
+
     method = control.get("independence_method")
     if method == "deterministic_recompute":
         finding["level2_status"] = "confirmed_by_recompute"
@@ -247,18 +289,32 @@ async def apply_level2(db, control, finding):
         finding["level2_status"] = "not_required_pass_or_unassessed"
         return
     if method in ("model-assisted", "independent_reviewer_model"):
+        l2_id = finding.get("l2_agent_id") or _l2_for(finding.get("l1_agent_id"))
+        l2_agent = agent_profiles.get_agent(l2_id) if l2_id else None
+        ev = finding.get("evidence") or []
+        masked_ev = "; ".join(str(e.get("masked", "")) for e in ev[:3]) or "(no masked fragment)"
         prompt = (
-            f"L1 control '{control['name']}' produced verdict {finding['verdict']} with reason: {finding['reason']} "
-            "As an independent reviewer using a different model family, reply AGREE or DISAGREE plus one line why."
+            f"Level-1 control '{control['name']}' (run by agent {finding.get('l1_agent_id')}) examined "
+            f"subject {finding.get('subject_ref')} ({finding.get('subject_type')}) and produced verdict "
+            f"{finding['verdict']}.\nLevel-1 reason: {finding['reason']}\nMasked evidence: {masked_ev}\n"
+            "Re-perform your independent check on this masked summary and reply AGREE or DISAGREE plus one line why."
         )
-        gw = await gateway.complete("l2_independent_review", prompt, "independent-reviewer", db=db)
+        # Route through the paired L2 agent's persona when it uses a model; otherwise
+        # fall back to the independent-reviewer profile (a different model family).
+        if l2_agent and l2_agent.get("uses_llm"):
+            gw = await gateway.complete_agent(l2_id, "l2_independent_review", prompt, level=2, db=db)
+        else:
+            gw = await gateway.complete("l2_independent_review", prompt, "independent-reviewer", db=db)
         l2_text = gw["text"]
         disagree = "disagree" in l2_text.lower()
+        finding["l2_agent_id"] = l2_id
+        finding["l2_model"] = gw.get("model_used")
         finding["level2_status"] = "disagreement_pending_adjudication" if disagree else "confirmed_by_independent_model"
         finding["level2_narrative"] = l2_text
         if disagree:
             await db.adjudications.insert_one({
                 "id": str(uuid4()), "finding_id": finding["id"], "project_id": finding["project_id"],
+                "l1_agent_id": finding.get("l1_agent_id"), "l2_agent_id": l2_id,
                 "l1_verdict": finding["verdict"], "l1_reason": finding["reason"],
                 "l2_verdict": "DISAGREE", "l2_narrative": l2_text,
                 "human_decision": None, "decided_by_role": None, "notes": "",
@@ -312,7 +368,7 @@ async def generate_author_report(db, project, event, findings):
         by_author.setdefault(author, []).append(f)
 
     masked_summary = "; ".join(f"{f['control_name']}: {f['verdict']} ({f['severity']})" for f in findings[:20]) or "No findings for this event."
-    gw = await gateway.complete("author_report_narrative", masked_summary, "primary", db=db)
+    gw = await gateway.complete_agent("A22", "author_report_narrative", masked_summary, level=1, db=db)
 
     sections = []
     for author, items in by_author.items():
@@ -341,7 +397,7 @@ async def generate_team_lead_report(db, project, event, findings):
     hotspots = sorted(hotspot_counts.items(), key=lambda x: -x[1])[:5]
 
     masked_summary = f"Severity breakdown: {severity_counts}. Verdict breakdown: {verdict_counts}. Top hotspots: {hotspots}."
-    gw = await gateway.complete("team_lead_report_narrative", masked_summary, "primary", db=db)
+    gw = await gateway.complete_agent("A22", "team_lead_report_narrative", masked_summary, level=1, db=db)
 
     sections = [
         {"heading": "Severity Breakdown", "body": [f"{k}: {v}" for k, v in severity_counts.items()] or ["No findings"]},

@@ -326,10 +326,25 @@ def _build_system_prompt(a: dict) -> str:
     )
 
 
+# L1 agent -> its independent Level-2 reviewer agent (from 02A / 16_Agent_Reclass).
+_L2_AGENT = {
+    "A01": "A18", "A02": "A12", "A03": "A01", "A04": "A03", "A05": "A18", "A06": "A05",
+    "A07": "A03", "A08": "A07", "A09": "A04", "A10": "A03", "A11": "A01", "A12": "A01",
+    "A13": "A11", "A14": "A03", "A15": "A01", "A16": "A18", "A17": "A05", "A18": "A01",
+    "A19": "A05", "A20": "A13", "A21": None, "A22": None,
+}
+
+
+def _derive_uses_llm(a: dict) -> bool:
+    role = (a.get("role_of_llm") or "").strip().lower()
+    return role not in ("none", "none.", "")
+
+
 AGENT_PROFILES = {}
 for _a in _AGENTS:
     _a = dict(_a)
-    _a["uses_llm"] = _a["agent_class"] in ("LLM-core", "Hybrid")
+    _a["uses_llm"] = _derive_uses_llm(_a)
+    _a["l2_agent_id"] = _L2_AGENT.get(_a["id"])
     _a["system_prompt"] = _build_system_prompt(_a)
     AGENT_PROFILES[_a["id"]] = _a
 

@@ -16,6 +16,12 @@ export default function Adjudication() {
     enabled: !!projectId,
   });
 
+  const { data: agentsData } = useQuery({
+    queryKey: ["harness-agents-map"],
+    queryFn: () => api.get("/harness/agents").then((r) => r.data),
+  });
+  const agentName = (id) => agentsData?.agents?.find((a) => a.id === id)?.name || id || "—";
+
   const decide = useMutation({
     mutationFn: ({ id, human_decision }) => api.post(`/adjudications/${id}/decide`, { human_decision, decided_by_role: role }),
     onSuccess: () => {
@@ -40,12 +46,12 @@ export default function Adjudication() {
             <div key={a.id} data-testid={`adjudication-row-${a.id}`} className="border border-black p-4 bg-gray-50">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-3 text-sm">
                 <div className="border border-gray-200 p-3 bg-white">
-                  <div className="text-[10px] font-bold uppercase text-gray-500 mb-1">Level 1 (Primary)</div>
+                  <div className="text-[10px] font-bold uppercase text-gray-500 mb-1">Level 1 · {a.l1_agent_id} {agentName(a.l1_agent_id)}</div>
                   <div className="font-bold mb-1">{a.l1_verdict}</div>
                   <div className="text-xs text-gray-600">{a.l1_reason}</div>
                 </div>
                 <div className="border border-gray-200 p-3 bg-white">
-                  <div className="text-[10px] font-bold uppercase text-gray-500 mb-1">Level 2 (Independent Reviewer)</div>
+                  <div className="text-[10px] font-bold uppercase text-gray-500 mb-1">Level 2 · {a.l2_agent_id} {agentName(a.l2_agent_id)}</div>
                   <div className="font-bold mb-1 text-red-700">{a.l2_verdict}</div>
                   <div className="text-xs text-gray-600">{a.l2_narrative}</div>
                 </div>

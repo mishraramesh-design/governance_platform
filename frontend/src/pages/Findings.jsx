@@ -24,6 +24,12 @@ export default function Findings() {
     enabled: !!projectId,
   });
 
+  const { data: agentsData } = useQuery({
+    queryKey: ["harness-agents-map"],
+    queryFn: () => api.get("/harness/agents").then((r) => r.data),
+  });
+  const agentName = (id) => agentsData?.agents?.find((a) => a.id === id)?.name || id || "—";
+
   const triage = useMutation({
     mutationFn: ({ id, decision }) => api.post(`/findings/${id}/triage`, { decision, decided_by_role: role }),
     onSuccess: () => {
@@ -91,10 +97,22 @@ export default function Findings() {
                   <SeverityPill severity={selected.severity} />
                   <VerdictPill verdict={selected.verdict} />
                   <ProvenancePill provenance={selected.provenance} />
+                  {selected.tier && <span data-testid="tier-chip" className="text-[10px] font-bold uppercase px-1.5 py-0.5 bg-black text-[#FFE600]">{selected.tier}</span>}
                 </div>
                 <div><span className="font-bold text-gray-600">Reason:</span> {selected.reason}</div>
                 <div><span className="font-bold text-gray-600">Suggested remedy:</span> {selected.suggested_remedy}</div>
                 <div><span className="font-bold text-gray-600">Confidence:</span> {selected.confidence}% · <span className="font-bold text-gray-600">Method:</span> {selected.method}</div>
+                <div className="grid grid-cols-2 gap-2 border border-gray-200 p-2 bg-gray-50" data-testid="finding-attribution">
+                  <div>
+                    <div className="text-[10px] font-bold uppercase text-gray-400">Level-1 agent</div>
+                    <div className="text-xs"><span className="font-mono font-bold">{selected.l1_agent_id}</span> {agentName(selected.l1_agent_id)}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-bold uppercase text-gray-400">Level-2 reviewer</div>
+                    <div className="text-xs"><span className="font-mono font-bold">{selected.l2_agent_id || "—"}</span> {selected.l2_agent_id ? agentName(selected.l2_agent_id) : ""}</div>
+                    {selected.l2_model && <div className="text-[10px] text-gray-400 font-mono">{selected.l2_model}</div>}
+                  </div>
+                </div>
                 <div><span className="font-bold text-gray-600">Level-2 status:</span> {selected.level2_status?.replaceAll("_", " ")}</div>
                 {selected.level2_narrative && <div className="text-xs italic text-gray-500 border-l-2 border-gray-300 pl-2">{selected.level2_narrative}</div>}
 
