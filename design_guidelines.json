@@ -1,0 +1,155 @@
+{
+  "theme_and_brand": {
+    "emotion": "Objective, Rigid, Functional, Trustworthy, Audit-grade.",
+    "archetype": "Swiss & High-Contrast (Archetype 4) - Customized",
+    "description": "Enterprise-grade SDLC Governance & Assurance Platform. The UI must convey authority and absolute precision. It uses an 'EY-style' color mapping (Yellow/Black/White/Grey) but strictly with ZERO EY branding, logos, or trademarks. It operates entirely as an advisory, read-only layer (observing, never acting).",
+    "logo_instructions": "DO NOT use any real-world brand logos. Create a simple abstract geometric shape (e.g., a pure black square with a sharp yellow dot in the corner) using raw Tailwind + HTML."
+  },
+  "colors": {
+    "background": {
+      "base": "#FFFFFF",
+      "surface": "#F9F9FA",
+      "surface_alt": "#F3F3F6",
+      "inverse": "#111111"
+    },
+    "text": {
+      "primary": "#111111",
+      "secondary": "#555560",
+      "tertiary": "#888893",
+      "inverse": "#FFFFFF",
+      "accent": "#000000"
+    },
+    "accent": {
+      "yellow": "#FFE600",
+      "yellow_hover": "#F0D800"
+    },
+    "semantic": {
+      "success": "#008A00",
+      "success_bg": "#E5F6E5",
+      "error": "#D93838",
+      "error_bg": "#FCECEC",
+      "warning": "#FFB800",
+      "warning_bg": "#FFF8E5",
+      "info": "#0055CC",
+      "info_bg": "#E5F0FA"
+    },
+    "structure": {
+      "border": "#E2E2E6",
+      "divider": "#EBEBEF"
+    }
+  },
+  "typography": {
+    "strategy": "The 'Old Money Tech' / Swiss Brutalist hybrid. Sharp, authoritative headings contrasting with ultra-legible, dense monolinear data body text.",
+    "fonts": {
+      "headings": "'Chivo', sans-serif",
+      "body": "'IBM Plex Sans', sans-serif",
+      "mono": "'IBM Plex Mono', monospace"
+    },
+    "scales": {
+      "h1": "text-3xl sm:text-4xl tracking-tighter font-black",
+      "h2": "text-xl sm:text-2xl tracking-tight font-bold",
+      "h3": "text-lg tracking-tight font-semibold",
+      "h4": "text-base tracking-tight font-semibold",
+      "body": "text-sm leading-relaxed",
+      "data": "text-xs tracking-wide tabular-nums",
+      "label": "text-[10px] uppercase tracking-[0.2em] font-bold text-gray-500"
+    }
+  },
+  "spacing_and_layout": {
+    "strategy": "High Density Grid (Bento Mode B). Every pixel matters. Extreme data visibility without clutter.",
+    "containers": {
+      "page_padding": "px-4 sm:px-8 py-6",
+      "card_padding": "p-4 sm:p-6"
+    },
+    "grid": {
+      "gap_dense": "gap-2 sm:gap-4",
+      "gap_wide": "gap-6 sm:gap-8"
+    },
+    "surface_strategy": "The 'Technical' Look (Grid Borders). Do not use soft, floating cards. Use border-collapse style layouts with sharp 1px borders (border-border/60). Remove border-radius for an unyielding, serious enterprise feel (max rounded-sm).",
+    "alignment": "Strict left-alignment for all data labels and values to optimize for fast visual scanning."
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-[#FFE600] text-black hover:bg-[#F0D800] font-bold tracking-tight rounded-none px-4 py-2 transition-colors border border-black",
+      "secondary": "bg-white text-black border border-black hover:bg-gray-50 font-semibold tracking-tight rounded-none px-4 py-2 transition-colors",
+      "ghost": "bg-transparent text-gray-700 hover:text-black hover:bg-gray-100 rounded-none px-3 py-1.5"
+    },
+    "badges": {
+      "advisory_pill": "inline-flex items-center gap-1.5 px-3 py-1 bg-[#111111] text-[#FFE600] text-xs font-bold uppercase tracking-wider rounded-full",
+      "status_pass": "bg-green-100 text-green-800 border-l-4 border-green-600 px-2 py-1 text-xs font-bold uppercase",
+      "status_fail": "bg-red-100 text-red-800 border-l-4 border-red-600 px-2 py-1 text-xs font-bold uppercase",
+      "status_unassessed": "bg-gray-100 text-gray-700 border-l-4 border-gray-400 px-2 py-1 text-xs font-bold uppercase"
+    },
+    "tables": {
+      "header": "bg-gray-50 border-y border-gray-300 text-left text-xs uppercase tracking-wider text-gray-600 font-bold py-2 px-3",
+      "cell": "border-b border-gray-200 py-2 px-3 text-sm text-gray-900 tabular-nums align-top",
+      "row_hover": "hover:bg-gray-50 transition-colors"
+    },
+    "header_nav": {
+      "container": "sticky top-0 z-50 bg-white border-b border-gray-300 h-14 flex items-center justify-between px-4 sm:px-8",
+      "role_switcher": "flex items-center gap-2 border-l border-gray-200 pl-4 ml-4"
+    }
+  },
+  "page_specific_patterns": {
+    "dashboard_kpis": "Top-left North Star metrics. Grouped in a strict 4-column subgrid. Large tabular numbers. Left-aligned.",
+    "findings_explorer": "Progressive disclosure layout. Left sidebar for filtering (Severity, Tags), main area for tri-state verdict lists. Drill-down pane on the right (Drawer/Sheet) for masked evidence.",
+    "traceability_matrix": "Dense matrix table bridging Requirements ↔ Design ↔ Commit ↔ Test. Highlight coverage % in yellow accents.",
+    "ledger_audit_trail": "Immutable event sourcing display. Use IBM Plex Mono for SHA-256 hash chains. Feature a prominent 'Verify Ledger Integrity' button.",
+    "gate_readiness": "Advisory human-decision screen. G1-G10 mapped strictly. Use accordion/collapsible panels to show readiness vs missing artifacts.",
+    "ai_governance": "ISO/IEC 42001 alignment (AI-01 to AI-16). Matrix view showing platform verification provenance chips (Platform/Client/Unattributed)."
+  },
+  "visual_enhancers": {
+    "borders": "Heavy use of 1px solid borders (border-[#E2E2E6]) to separate data regions. No soft shadows. Optional 4px left-borders to denote status (Red/Green/Yellow).",
+    "backgrounds": "Solid white and off-white. No gradients. No glassmorphism. This is a secure audit environment; visual refraction implies obfuscation.",
+    "icons": "Use 'lucide-react' with a sharp, 1.5px or 2px stroke width. Straightforward and unambiguous."
+  },
+  "motion_and_interactions": {
+    "strategy": "Instantaneous. Snappy. No long fades or bounces.",
+    "hover": "Immediate background color shifts (e.g., table row hover).",
+    "transitions": "transition-colors duration-100 ease-in",
+    "modals_drawers": "Slide in from right (Sheet component) for evidence drill-downs. No bounce effect."
+  },
+  "accessibility": {
+    "contrast": "Strict APCA/WCAG AA compliance. Black on Yellow, Black on White, White on Black.",
+    "focus": "focus:outline-none focus:ring-2 focus:ring-[#FFE600] focus:ring-offset-1 focus:ring-offset-white",
+    "screen_reader": "All icon-only buttons must have aria-labels. Tabular data must use proper <th> and scope attributes."
+  },
+  "instructions_to_main_agent": [
+    "Build standard React (.js) using Tailwind CSS and Shadcn UI components. Do not use TypeScript.",
+    "STRICT RULE: NO EY logos, NO EY branding, NO trademarked assets. Create a generic geometric placeholder logo.",
+    "STRICT RULE: Yellow (#FFE600) is ONLY for accents, primary CTAs, and highlights. Do not use yellow for large background areas or it will cause eye strain.",
+    "STRICT RULE: Add data-testid attributes to all interactive elements, dropdowns, buttons, and critical data cells for test automation.",
+    "STRICT RULE: Implement the 'Read-only · Advisory' badge prominently in the persistent global header.",
+    "STRICT RULE: Ensure the Role Switcher dropdown dynamically impacts the visibility/permissions of the dashboard modules.",
+    "Use Shadcn's '<Select>' component for the Role Switcher.",
+    "Use Shadcn's '<Sheet>' component for the Findings Evidence drill-down.",
+    "Use Shadcn's '<Table>' component extensively for high-density ledgers, matrices, and control catalogs.",
+    "Use Recharts (styled sharply, no rounded bars, straight lines, sharp tooltips) for trend charts.",
+    "Include 'IBM Plex Mono' (or generic monospace) for the SHA-256 hash chains in the ledger integrity view.",
+    "Do NOT center-align the application. Left-align everything. It is a dense B2B tool."
+  ],
+  "universal_guidelines": [
+    "You tend to converge toward generic, 'on distribution' outputs. Avoid 'AI slop'. Make it crisp, sharp, and authoritative.",
+    "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients.",
+    "Create depth through border grids and tight padding, NOT through heavy box-shadows.",
+    "You MUST NOT apply universal transition. Eg: transition: all. Apply to specific properties.",
+    "You MUST NOT center align the app container. No .App { text-align: center; }.",
+    "Always use modern button styles (sharp corners for this enterprise tool) with interaction animations & color relevant to the app style.",
+    "NEVER use AI assistant Emoji characters like 🤖🧠💭💡🔮🎯 etc for icons. Use Lucide icons.",
+    "Every interaction needs a micro-animation (e.g., hover background color shift)."
+  ],
+  "image_urls": {
+    "avatar_female_1": {
+      "url": "https://images.unsplash.com/photo-1573497019940-1c28c88b4f3e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MDV8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBwb3J0cmFpdCUyMGhlYWRzaG90JTIwb2ZmaWNlfGVufDB8fHx8MTc5MTc0MTEyN3ww&ixlib=rb-4.1.0&q=85",
+      "description": "Professional female headshot for Author Report / Developer avatar."
+    },
+    "avatar_female_2": {
+      "url": "https://images.unsplash.com/photo-1699899657680-421c2c2d5064?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MDV8MHwxfHNlYXJjaHwzfHxwcm9mZXNzaW9uYWwlMjBwb3J0cmFpdCUyMGhlYWRzaG90JTIwb2ZmaWNlfGVufDB8fHx8MTc5MTc0MTEyN3ww&ixlib=rb-4.1.0&q=85",
+      "description": "Professional female headshot for Team Lead / Architect avatar."
+    },
+    "avatar_male_1": {
+      "url": "https://images.pexels.com/photos/37148308/pexels-photo-37148308.jpeg",
+      "description": "Professional male headshot for Release Manager avatar."
+    }
+  }
+}

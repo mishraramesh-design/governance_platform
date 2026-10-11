@@ -1,0 +1,120 @@
+import hashlib
+import re
+from uuid import uuid4
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, HTTPException
+
+from database import db
+from models import RepoAuditRequest, RuntimeAnalyzeRequest, EdgeClientSimulateRequest
+from detectors import scan_secrets, scan_pii
+import engine
+import ledger as ledger_mod
+
+router = APIRouter()
+
+
+@router.get("/ledger")
+async def get_ledger():
+    return await db.ledger.find({}, {"_id": 0}).sort("seq", 1).to_list(200000)
+
+
+@router.get("/ledger/verify")
+async def verify_ledger():
+    return await ledger_mod.verify_integrity(db)
+
+
+@router.get("/edge-clients")
+async def list_edge_clients():
+    return await db.edge_clients.find({}, {"_id": 0}).to_list(100)
+
+
+@router.get("/edge-clients/contributions")
+async def list_edge_contributions(project_id: str = None):
+    q = {"project_id": project_id} if project_id else {}
+    return await db.edge_contributions.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+
+@router.post("/edge-clients/simulate")
+async def simulate_edge_client(payload: EdgeClientSimulateRequest):
+    client = await db.edge_clients.find_one({"id": payload.client_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(404, "unknown edge client")
+    project = await db.projects.find_one({"id": payload.project_id}, {"_id": 0})
+    if not project:
+        raise HTTPException(404, "project not found")
+
+    if client["id"] in ("EC-01", "EC-02"):
+        contribution = {
+            "id": str(uuid4()), "client_id": client["id"], "client_name": client["name"], "project_id": payload.project_id,
+            "note": payload.note or "", "trust_class": "Client-generated, unverified", "may_set_verdict": False,
+            "provenance": "client_model_unverified", "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.edge_contributions.insert_one(dict(contribution))
+        await ledger_mod.append_to_ledger(db, "edge_contribution", contribution["id"], {"client_id": client["id"], "project_id": payload.project_id})
+        contribution.pop("_id", None)
+        return {"mode": "unverified_contribution", "contribution": contribution}
+
+    event_type = payload.event_type or "commit_pushed"
+    result = await engine.run_event(db, payload.project_id, event_type, payload.source_ref, triggered_by=client["id"])
+    return {"mode": "platform_routed_event", "client": client, "result": result}
+
+
+@router.post("/repo-audit/simulate")
+async def simulate_repo_audit(payload: RepoAuditRequest):
+    project = await db.projects.find_one({"id": payload.project_id}, {"_id": 0})
+    if not project:
+        raise HTTPException(404, "project not found")
+
+    digest = hashlib.sha256(payload.github_url.encode()).hexdigest()
+    seed_val = int(digest[:8], 16)
+    languages_pool = ["Python", "TypeScript", "Java", "Go", "JavaScript", "C#"]
+    languages = [languages_pool[seed_val % len(languages_pool)], languages_pool[(seed_val // 7) % len(languages_pool)]]
+    suggested_tier = ["T1", "T2", "T3", "T4"][seed_val % 4]
+    folder_map = ["/src", "/tests", "/infra", "/docs"] if seed_val % 2 == 0 else ["/app", "/services", "/pipelines"]
+
+    audit = {
+        "id": str(uuid4()), "project_id": payload.project_id, "github_url": payload.github_url,
+        "detected_languages": sorted(set(languages)), "suggested_integrity_tier": suggested_tier,
+        "folder_map": folder_map, "note": "Simulated - no live repository was accessed in this prototype.",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.repo_audits.insert_one(dict(audit))
+    await ledger_mod.append_to_ledger(db, "repo_audit", audit["id"], {"project_id": payload.project_id, "github_url": payload.github_url})
+    audit.pop("_id", None)
+    return audit
+
+
+@router.post("/runtime/analyze")
+async def analyze_runtime_log(payload: RuntimeAnalyzeRequest):
+    project = await db.projects.find_one({"id": payload.project_id}, {"_id": 0})
+    if not project:
+        raise HTTPException(404, "project not found")
+
+    log_text = payload.log_text
+    secret_hits = scan_secrets(log_text)
+    pii_hits = scan_pii(log_text)
+    security_findings = secret_hits + pii_hits
+
+    quality_issues = len(re.findall(r"ERROR|Exception|Traceback", log_text, re.IGNORECASE))
+    perf_issues = re.findall(r"took\s+(\d+)\s*ms", log_text, re.IGNORECASE)
+    slow_calls = [int(p) for p in perf_issues if int(p) > 1000]
+
+    traced = []
+    for hit in security_findings:
+        matching = await db.findings.find_one({"evidence.hash": hit["hash"]}, {"_id": 0})
+        if matching:
+            traced.append({"log_hash": hit["hash"], "traced_to_finding_id": matching["id"], "control_name": matching["control_name"]})
+
+    report = {
+        "id": str(uuid4()), "project_id": payload.project_id,
+        "security": {"verdict": "FAIL" if security_findings else "PASS", "findings": security_findings},
+        "performance": {"verdict": "FAIL" if slow_calls else "PASS", "slow_calls_over_1000ms": slow_calls},
+        "quality": {"verdict": "FAIL" if quality_issues > 0 else "PASS", "error_line_count": quality_issues},
+        "log_to_source_tracing": traced,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.runtime_reports.insert_one(dict(report))
+    await ledger_mod.append_to_ledger(db, "runtime_report", report["id"], {"project_id": payload.project_id})
+    report.pop("_id", None)
+    return report

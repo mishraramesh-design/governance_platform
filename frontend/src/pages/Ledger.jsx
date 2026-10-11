@@ -1,0 +1,55 @@
+import { useQuery } from "@tanstack/react-query";
+import api from "../lib/api";
+import { PageHeader } from "../components/PageHeader";
+
+export default function Ledger() {
+  const { data: entries, isLoading } = useQuery({ queryKey: ["ledger"], queryFn: () => api.get("/ledger").then((r) => r.data) });
+  const { data: verify, refetch, isFetching } = useQuery({ queryKey: ["ledger-verify"], queryFn: () => api.get("/ledger/verify").then((r) => r.data), enabled: false });
+
+  return (
+    <div data-testid="ledger-page">
+      <PageHeader
+        title="Ledger / Audit Trail"
+        subtitle="Append-only, SHA-256 hash-chained record of every event, finding, triage decision, adjudication, report and artifact."
+        actions={
+          <button data-testid="verify-ledger-btn" onClick={() => refetch()} disabled={isFetching} className="bg-[#FFE600] text-black hover:bg-[#F0D800] font-bold tracking-tight rounded-none px-4 py-2 text-xs border border-black transition-colors duration-100">
+            {isFetching ? "Verifying…" : "Verify Ledger Integrity"}
+          </button>
+        }
+      />
+
+      {verify && (
+        <div data-testid="ledger-verify-result" className={`mb-6 border p-4 ${verify.valid ? "border-green-600 bg-green-50" : "border-red-600 bg-red-50"}`}>
+          <div className={`font-black text-lg ${verify.valid ? "text-green-700" : "text-red-700"}`}>{verify.valid ? "✓ Chain Valid" : "✗ Chain Broken"}</div>
+          <div className="text-xs text-gray-600">{verify.total_entries} entries verified{!verify.valid && ` - break at seq ${verify.broken_at_seq}`}</div>
+        </div>
+      )}
+
+      {isLoading && <div className="text-sm text-gray-400">Loading…</div>}
+
+      <div className="overflow-x-auto border border-gray-200">
+        <table className="w-full text-xs font-mono">
+          <thead>
+            <tr className="bg-gray-50 border-y border-gray-300">
+              {["Seq", "Type", "Ref", "Prev Hash", "Hash", "Timestamp"].map((h) => (
+                <th key={h} className="text-left text-xs uppercase tracking-wider text-gray-600 font-bold py-2 px-3 not-italic">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {[...(entries || [])].reverse().slice(0, 300).map((e) => (
+              <tr key={e.id} data-testid={`ledger-row-${e.seq}`} className="hover:bg-gray-50 transition-colors duration-100">
+                <td className="border-b border-gray-200 py-1.5 px-3">{e.seq}</td>
+                <td className="border-b border-gray-200 py-1.5 px-3">{e.payload_type}</td>
+                <td className="border-b border-gray-200 py-1.5 px-3 truncate max-w-[120px]">{e.payload_ref}</td>
+                <td className="border-b border-gray-200 py-1.5 px-3 truncate max-w-[140px] text-gray-400">{e.prev_hash.slice(0, 16)}…</td>
+                <td className="border-b border-gray-200 py-1.5 px-3 truncate max-w-[140px]">{e.hash.slice(0, 16)}…</td>
+                <td className="border-b border-gray-200 py-1.5 px-3 text-gray-500">{e.timestamp.slice(0, 19)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
