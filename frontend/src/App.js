@@ -8,6 +8,8 @@ import { AppShell } from "@/components/AppShell";
 import Dashboard from "@/pages/Dashboard";
 import Projects from "@/pages/Projects";
 import Agents from "@/pages/Agents";
+import AgentHarness from "@/pages/AgentHarness";
+import ModelSettings from "@/pages/ModelSettings";
 import Controls from "@/pages/Controls";
 import Gates from "@/pages/Gates";
 import AIGovernance from "@/pages/AIGovernance";
@@ -34,6 +36,8 @@ function App() {
               <Route path="/" element={<Dashboard />} />
               <Route path="/projects" element={<Projects />} />
               <Route path="/agents" element={<Agents />} />
+              <Route path="/harness" element={<AgentHarness />} />
+              <Route path="/model-settings" element={<ModelSettings />} />
               <Route path="/controls" element={<Controls />} />
               <Route path="/gates" element={<Gates />} />
               <Route path="/ai-governance" element={<AIGovernance />} />

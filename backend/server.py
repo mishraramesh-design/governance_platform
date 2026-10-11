@@ -6,7 +6,7 @@ import os
 
 from database import db
 import seed_data
-from routers import catalog, projects, events, reports, assurance, dashboard
+from routers import catalog, projects, events, reports, assurance, dashboard, harness
 
 app = FastAPI(title="SDLC Governance & Assurance Platform")
 api_router = APIRouter(prefix="/api")
@@ -23,6 +23,7 @@ api_router.include_router(events.router)
 api_router.include_router(reports.router)
 api_router.include_router(assurance.router)
 api_router.include_router(dashboard.router)
+api_router.include_router(harness.router)
 
 app.include_router(api_router)
 
