@@ -37,7 +37,9 @@ export default function Mlops() {
   const act = async (id, kind, verb) => {
     try {
       const r = await api.post(`/mlops/registry/${id}/${verb}`);
-      toast.success(verb === "evaluate" ? `Evaluated · F1 ${r.data.result.f1}` : `${verb} ok`);
+      if (verb === "evaluate") toast.success(`Evaluated · F1 ${r.data.result.f1}`);
+      else if (verb === "shadow-compare") toast.success(`A/B: candidate F1 ${r.data.candidate_f1} vs baseline ${r.data.baseline_f1} (${r.data.f1_delta >= 0 ? "+" : ""}${r.data.f1_delta}) → ${r.data.recommendation}`);
+      else toast.success(`${verb} ok`);
       qc.invalidateQueries({ queryKey: ["mlops-registry"] });
       qc.invalidateQueries({ queryKey: ["mlops-metrics"] });
     } catch (e) {
@@ -118,11 +120,23 @@ export default function Mlops() {
                       <td className="py-1.5 px-3 text-xs">{e.name}</td>
                       <td className="py-1.5 px-3 text-xs">v{e.version}</td>
                       <td className="py-1.5 px-3"><span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 ${STATE_STYLE[e.state] || ""}`}>{e.state}</span></td>
-                      <td className="py-1.5 px-3 text-xs">{e.latest_eval ? e.latest_eval.f1 : "—"}</td>
+                      <td className="py-1.5 px-3 text-xs">
+                        {e.latest_eval ? e.latest_eval.f1 : "—"}
+                        {e.ab_comparison && (
+                          <div data-testid={`ab-result-${e.ref}`} className="mt-0.5 text-[10px] bg-[#FFFBe6] border border-[#FFE600] px-1.5 py-0.5 inline-block">
+                            A/B {e.ab_comparison.baseline_f1} → {e.ab_comparison.candidate_f1}
+                            <span className={e.ab_comparison.f1_delta >= 0 ? "text-green-700" : "text-red-700"}> ({e.ab_comparison.f1_delta >= 0 ? "+" : ""}{e.ab_comparison.f1_delta})</span>
+                            <span className="font-bold uppercase"> · {e.ab_comparison.recommendation}</span>
+                          </div>
+                        )}
+                      </td>
                       <td className="py-1.5 px-3">
-                        <div className="flex gap-1">
+                        <div className="flex gap-1 flex-wrap">
                           {kind === "rule_pack" && (
-                            <button data-testid={`eval-btn-${e.ref}`} onClick={() => act(e.id, kind, "evaluate")} className="text-[10px] uppercase font-bold border border-gray-400 px-2 py-0.5 hover:border-black">Evaluate</button>
+                            <>
+                              <button data-testid={`eval-btn-${e.ref}`} onClick={() => act(e.id, kind, "evaluate")} className="text-[10px] uppercase font-bold border border-gray-400 px-2 py-0.5 hover:border-black">Evaluate</button>
+                              <button data-testid={`ab-btn-${e.ref}`} onClick={() => act(e.id, kind, "shadow-compare")} className="text-[10px] uppercase font-bold border border-gray-400 px-2 py-0.5 hover:border-black">A/B Compare</button>
+                            </>
                           )}
                           <button data-testid={`shadow-btn-${e.ref}`} onClick={() => act(e.id, kind, "shadow")} className="text-[10px] uppercase font-bold border border-gray-400 px-2 py-0.5 hover:border-black">Shadow</button>
                           <button data-testid={`promote-btn-${e.ref}`} onClick={() => act(e.id, kind, "promote")} className="text-[10px] uppercase font-bold border border-black px-2 py-0.5 hover:bg-black hover:text-[#FFE600]">Promote</button>

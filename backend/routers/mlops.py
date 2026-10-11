@@ -66,6 +66,8 @@ async def ensure_mlops_seeded(db):
                                        "result": baseline, "created_at": now, "label": "baseline"})
         await db.eval_runs.insert_one({"id": str(uuid4()), "ref": dk, "kind": "rule_pack",
                                        "result": res, "created_at": now, "label": "current"})
+    await ledger_mod.append_to_ledger(db, "mlops_registry_initialised", "registry",
+                                      {"entries": len(entries), "detectors": evaluator.DETECTOR_KEYS})
 
 
 @router.get("/registry")
@@ -131,6 +133,31 @@ async def shadow(entry_id: str):
     await db.harness_registry.update_one({"id": entry_id}, {"$set": {"state": "shadow"}})
     await ledger_mod.append_to_ledger(db, "registry_shadow", entry_id, {"ref": entry["ref"]})
     return await db.harness_registry.find_one({"id": entry_id}, {"_id": 0})
+
+
+@router.post("/registry/{entry_id}/shadow-compare")
+async def shadow_compare(entry_id: str):
+    """Run the shadow candidate alongside the promoted baseline and compare F1."""
+    entry = await db.harness_registry.find_one({"id": entry_id}, {"_id": 0})
+    if not entry:
+        raise HTTPException(404, "registry entry not found")
+    if entry["kind"] != "rule_pack" or entry["ref"] not in evaluator.DETECTOR_KEYS:
+        raise HTTPException(400, "shadow A/B currently supports deterministic rule-packs only")
+    candidate = evaluator.run_eval(entry["ref"])
+    base_runs = await db.eval_runs.find({"ref": entry["ref"], "label": "baseline"}, {"_id": 0}).sort("created_at", -1).to_list(1)
+    baseline = base_runs[0]["result"] if base_runs else None
+    f1_delta = round(candidate["f1"] - baseline["f1"], 3) if baseline else None
+    recommend = ("promote" if (baseline and candidate["f1"] >= baseline["f1"] and candidate["f1"] >= F1_PROMOTION_THRESHOLD)
+                 else "hold")
+    now = datetime.now(timezone.utc).isoformat()
+    comparison = {"candidate_f1": candidate["f1"], "baseline_f1": baseline["f1"] if baseline else None,
+                  "f1_delta": f1_delta, "recommendation": recommend, "candidate": candidate, "baseline": baseline, "at": now}
+    await db.harness_registry.update_one({"id": entry_id}, {"$set": {"state": "shadow", "ab_comparison": comparison}})
+    await db.eval_runs.insert_one({"id": str(uuid4()), "ref": entry["ref"], "kind": "rule_pack",
+                                   "result": candidate, "created_at": now, "label": "shadow"})
+    await ledger_mod.append_to_ledger(db, "mlops_shadow_compare", entry_id,
+                                      {"ref": entry["ref"], "f1_delta": f1_delta, "recommendation": recommend})
+    return comparison
 
 
 @router.get("/eval-runs")

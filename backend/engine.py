@@ -262,15 +262,148 @@ async def handle_release_readiness(db, project, event, source_ref):
         ["release"], "Proceed to human G8 gate review.", project["id"], "project", "deterministic_recompute", [])]
 
 
+SECURITY_REQ_TERMS = ["auth", "login", "password", "mfa", "multi-factor", "encrypt", "mask",
+                      "aadhaar", "pan", "pii", "personal", "payment", "refund", "token", "secret",
+                      "access", "ledger", "immutable"]
+SECURITY_DESIGN_TERMS = ["auth", "mask", "encrypt", "ledger", "access", "privacy", "secure", "hash", "token"]
+NFR_TERMS = ["within", "second", "ms", "%", "availability", "throughput", "latency", "99."]
+
+
+def _is_security_relevant(req):
+    t = (req.get("text") or "").lower()
+    return req.get("criticality", "").lower() in ("critical", "high") or any(k in t for k in SECURITY_REQ_TERMS)
+
+
+async def handle_architecture_conformance(db, project, event, source_ref):
+    reqs = await db.requirements.find({"project_id": project["id"]}, {"_id": 0}).to_list(1000)
+    designs = await db.design_items.find({"project_id": project["id"]}, {"_id": 0}).to_list(1000)
+    covered = set()
+    for d in designs:
+        covered.update(d.get("requirement_ids", []))
+    critical = [r for r in reqs if r.get("criticality", "").lower() in ("critical", "high")]
+    uncovered_critical = [r["req_id"] for r in critical if r["req_id"] not in covered]
+    nfr_reqs = [r for r in reqs if any(term in (r.get("text") or "").lower() for term in NFR_TERMS)]
+    nfr_uncovered = [r["req_id"] for r in nfr_reqs if r["req_id"] not in covered]
+    verdict = "FAIL" if uncovered_critical else "PASS"
+    reason = (f"{len(uncovered_critical)} critical/high requirement(s) have no design coverage: "
+              f"{', '.join(uncovered_critical)}." if uncovered_critical else
+              f"All {len(critical)} critical/high requirements are covered by at least one design item.")
+    if nfr_uncovered:
+        reason += f" NFR allocation gap: {', '.join(nfr_uncovered)} not traced to a design item."
+    evidence = [{"type": "uncovered_requirement", "masked": rid, "hash": keyed_hash(rid)} for rid in uncovered_critical]
+    return [build_finding(project, event, "CTRL-04", "Architecture Conformance Review", "A04",
+        severity="high" if verdict == "FAIL" else "low", confidence=88, verdict=verdict, reason=reason,
+        tags=["design", "architecture", "nfr"],
+        suggested_remedy="Add design items (HLD/LLD/ADR) covering the uncovered critical requirements and allocate NFR budgets." if verdict == "FAIL" else "No action required.",
+        subject_ref=project["id"], subject_type="project", method="deterministic_coverage", evidence=evidence)]
+
+
+async def handle_threat_model(db, project, event, source_ref):
+    reqs = await db.requirements.find({"project_id": project["id"]}, {"_id": 0}).to_list(1000)
+    designs = await db.design_items.find({"project_id": project["id"]}, {"_id": 0}).to_list(1000)
+    sec_designs = [d for d in designs if any(k in (d.get("summary") or "").lower() for k in SECURITY_DESIGN_TERMS)]
+    covered_by_sec = set()
+    for d in sec_designs:
+        covered_by_sec.update(d.get("requirement_ids", []))
+    sec_reqs = [r for r in reqs if _is_security_relevant(r)]
+    unmodeled = [r["req_id"] for r in sec_reqs if r["req_id"] not in covered_by_sec]
+    verdict = "FAIL" if unmodeled else "PASS"
+    reason = (f"{len(unmodeled)} security-relevant requirement(s) are not addressed by any security/threat design "
+              f"item (STRIDE gap): {', '.join(unmodeled)}." if unmodeled else
+              f"All {len(sec_reqs)} security-relevant requirements are addressed by a security design item.")
+    evidence = [{"type": "unmodeled_security_requirement", "masked": rid, "hash": keyed_hash(rid)} for rid in unmodeled]
+    f = build_finding(project, event, "CTRL-05", "Threat Model Review", "A05",
+        severity="high" if verdict == "FAIL" else "low", confidence=85, verdict=verdict, reason=reason,
+        tags=["design", "security", "privacy", "STRIDE"] + DPDP_TAGS,
+        suggested_remedy="Produce/extend the threat model (STRIDE) and a mitigating design for each unmodeled security requirement." if verdict == "FAIL" else "No action required.",
+        subject_ref=project["id"], subject_type="project", method="deterministic_coverage", evidence=evidence)
+    f["tier"] = "T1"
+    return [f]
+
+
+async def _system_test_finding(db, project, event, control_id, name, agent, test_type, evaluate):
+    tests = await db.test_cases.find({"project_id": project["id"], "type": test_type}, {"_id": 0}).to_list(1000)
+    if not tests:
+        return not_assessed_stub(project, event, {"id": control_id, "name": name, "executor": agent}, source_ref=project["id"])
+    verdict, reason, evidence, severity, remedy = evaluate(tests)
+    return [build_finding(project, event, control_id, name, agent,
+        severity=severity, confidence=85, verdict=verdict, reason=reason,
+        tags=["system_test"], suggested_remedy=remedy, subject_ref=project["id"], subject_type="project",
+        method="deterministic_recompute", evidence=evidence)]
+
+
+async def handle_security_testing(db, project, event, source_ref):
+    open_crit = await db.findings.find({"project_id": project["id"], "status": "open", "verdict": "FAIL",
+        "control_id": {"$in": ["CTRL-06", "CTRL-07", "CTRL-08"]}, "severity": {"$in": ["high", "critical"]}}, {"_id": 0}).to_list(1000)
+
+    def ev(tests):
+        failed = [t for t in tests if t.get("status") != "passed"]
+        bad = bool(failed) or bool(open_crit)
+        reason = (f"{len(failed)} DAST security test(s) failed; {len(open_crit)} open high/critical "
+                  f"secret/PII/logging finding(s) still exposed." if bad else
+                  f"All {len(tests)} DAST security tests passed and no open high/critical exposures remain.")
+        evid = [{"type": "failed_security_test", "masked": t["test_id"], "hash": keyed_hash(t["test_id"])} for t in failed]
+        return ("FAIL" if bad else "PASS", reason, evid, "critical" if bad else "low",
+                "Remediate failing DAST cases and close open high/critical security findings before release." if bad else "No action required.")
+    return await _system_test_finding(db, project, event, "CTRL-15", "Security Testing (DAST)", "A05", "security", ev)
+
+
+async def handle_performance(db, project, event, source_ref):
+    def ev(tests):
+        breaches = [t for t in tests if float(t.get("measured", 0)) > float(t.get("threshold", 1e12))]
+        reason = ("; ".join(f"{t.get('metric')} {t.get('measured')}>{t.get('threshold')}" for t in breaches)
+                  if breaches else f"All {len(tests)} performance thresholds met.")
+        evid = [{"type": "perf_breach", "masked": f"{t.get('metric')}={t.get('measured')}", "hash": keyed_hash(t["test_id"])} for t in breaches]
+        return ("FAIL" if breaches else "PASS", f"{len(breaches)} performance threshold breach(es): {reason}" if breaches else reason,
+                evid, "high" if breaches else "low",
+                "Optimise the breaching path or renegotiate the SLO before release." if breaches else "No action required.")
+    return await _system_test_finding(db, project, event, "CTRL-16", "Performance Threshold Check", "A08", "performance", ev)
+
+
+async def handle_accessibility(db, project, event, source_ref):
+    def ev(tests):
+        total = sum(int(t.get("wcag_violations", 0)) for t in tests)
+        offenders = [t for t in tests if int(t.get("wcag_violations", 0)) > 0]
+        evid = [{"type": "wcag_violation", "masked": f"{t['test_id']}:{t.get('wcag_violations')}", "hash": keyed_hash(t["test_id"])} for t in offenders]
+        return ("FAIL" if total else "PASS",
+                f"{total} WCAG 2.2 violation(s) across {len(offenders)} screen(s)." if total else f"No WCAG 2.2 violations across {len(tests)} checked screen(s).",
+                evid, "medium" if total else "low",
+                "Fix the listed WCAG 2.2 violations (contrast, labels, focus order)." if total else "No action required.")
+    return await _system_test_finding(db, project, event, "CTRL-17", "Accessibility Check", "A08", "accessibility", ev)
+
+
+async def handle_ai_eval(db, project, event, source_ref):
+    def ev(tests):
+        fails = []
+        for t in tests:
+            score, thr = float(t.get("score", 0)), float(t.get("threshold", 0))
+            lower_better = t.get("direction") == "lower_is_better"
+            if (lower_better and score > thr) or (not lower_better and score < thr):
+                fails.append(t)
+        reason = ("; ".join(f"{t.get('metric')} {t.get('score')} vs {t.get('threshold')}" for t in fails)
+                  if fails else f"All {len(tests)} AI evaluation metrics within tolerance.")
+        evid = [{"type": "ai_eval_breach", "masked": f"{t.get('metric')}={t.get('score')}", "hash": keyed_hash(t["test_id"])} for t in fails]
+        return ("FAIL" if fails else "PASS", f"{len(fails)} AI evaluation metric(s) out of tolerance: {reason}" if fails else reason,
+                evid, "high" if fails else "low",
+                "Re-tune/guardrail the model and re-run the ISO/IEC 42001 evaluation suite before release." if fails else "No action required.")
+    return await _system_test_finding(db, project, event, "CTRL-18", "AI Model Evaluation", "A16", "ai_eval", ev)
+
+
 CONTROL_HANDLERS = {
     "CTRL-01": handle_requirement_quality,
     "CTRL-02": handle_acceptance_criteria,
     "CTRL-03": handle_traceability_gap,
+    "CTRL-04": handle_architecture_conformance,
+    "CTRL-05": handle_threat_model,
     "CTRL-06": handle_secrets,
     "CTRL-07": handle_pii,
     "CTRL-08": handle_logging_leak,
     "CTRL-10": handle_static_code,
     "CTRL-11": handle_unit_test_adequacy,
+    "CTRL-15": handle_security_testing,
+    "CTRL-16": handle_performance,
+    "CTRL-17": handle_accessibility,
+    "CTRL-18": handle_ai_eval,
     "CTRL-19": handle_release_readiness,
 }
 
@@ -480,15 +613,19 @@ async def compute_gate_status(db, project_id):
     g2_status = "At Risk" if req_fails else "Ready"
     g2 = gate("G2", "Requirements Baseline", "Requirements quality & traceability reviewed", ["Business Owner", "BA Lead", "Architect", "IV&V Lead"],
                g2_status, f"{len(req_fails)} requirement(s) failing the quality bar." if req_fails else "All requirements meet the baseline quality bar.")
-    g3 = gate("G3", "Design Baseline", "Architecture, threat model and testability reviewed", ["Architect", "Security/Privacy", "IV&V Lead"],
-               "Not Assessed", "Architecture conformance & threat-model detectors are not yet wired in this prototype phase.")
+    g3_status = "Not Assessed" if not design_stub else ("At Risk" if any(f["verdict"] == "FAIL" for f in design_stub) else "Ready")
+    g3_fails = [f for f in design_stub if f["verdict"] == "FAIL"]
+    g3 = gate("G3", "Design Baseline", "Architecture conformance & threat model reviewed", ["Architect", "Security/Privacy", "IV&V Lead"],
+               g3_status, (f"{len(g3_fails)} design finding(s) failing (architecture coverage / threat model)." if g3_fails else "Architecture conformance and threat-model checks passed.") if design_stub else "No design findings on record yet.")
     g4_status = "At Risk" if build_fails else "Ready"
     g4 = gate("G4", "Build Complete", "Code review, secrets/PII/static checks passed", ["Engineering Lead", "Security", "IV&V Lead"],
                g4_status, f"{len(build_fails)} open high/critical build finding(s)." if build_fails else "No open high/critical build findings.")
     g5 = gate("G5", "Integration Test Exit", "Interfaces & E2E flows tested", ["Test Lead", "IV&V Lead"],
                "Not Assessed", "API contract / E2E detectors are not yet wired in this prototype phase.")
-    g6 = gate("G6", "System Test Exit", "Functional, security, performance, AI evaluation complete", ["Test/Security/Performance/AI Leads", "IV&V Lead"],
-               "Not Assessed", "System-test detectors (security/perf/accessibility/AI eval) are not yet wired in this prototype phase.")
+    g6_status = "Not Assessed" if not sys_test_stub else ("At Risk" if any(f["verdict"] == "FAIL" for f in sys_test_stub) else "Ready")
+    g6_fails = [f for f in sys_test_stub if f["verdict"] == "FAIL"]
+    g6 = gate("G6", "System Test Exit", "Functional, security, performance, accessibility & AI evaluation complete", ["Test/Security/Performance/AI Leads", "IV&V Lead"],
+               g6_status, (f"{len(g6_fails)} system-test finding(s) failing across security/performance/accessibility/AI." if g6_fails else "All system-test checks passed.") if sys_test_stub else "No system-test findings on record yet.")
     uat_status = "Not Assessed"
     if uat_tests:
         uat_status = "Ready" if all(t.get("status") == "passed" for t in uat_tests) else "At Risk"

@@ -258,6 +258,14 @@ async def _seed(db):
             {"id": str(uuid4()), "project_id": pid, "test_id": f"TC-002-{idx}", "type": "unit", "requirement_ids": [f"REQ-003-{idx}"], "status": "passed", "created_at": now},
             {"id": str(uuid4()), "project_id": pid, "test_id": f"TC-003-{idx}", "type": "integration", "requirement_ids": [f"REQ-004-{idx}"], "status": "passed", "created_at": now},
             {"id": str(uuid4()), "project_id": pid, "test_id": f"TC-004-{idx}", "type": "uat", "requirement_ids": [f"REQ-001-{idx}", f"REQ-004-{idx}"], "status": "passed", "created_at": now},
+            {"id": str(uuid4()), "project_id": pid, "test_id": f"TC-SEC-001-{idx}", "type": "security", "requirement_ids": [f"REQ-001-{idx}"], "status": "passed", "created_at": now},
+            {"id": str(uuid4()), "project_id": pid, "test_id": f"TC-SEC-002-{idx}", "type": "security", "requirement_ids": [f"REQ-002-{idx}"], "status": "failed", "created_at": now},
+            {"id": str(uuid4()), "project_id": pid, "test_id": f"TC-PERF-001-{idx}", "type": "performance", "metric": "p95_latency_ms", "measured": 180, "threshold": 200, "requirement_ids": [f"REQ-001-{idx}"], "status": "passed", "created_at": now},
+            {"id": str(uuid4()), "project_id": pid, "test_id": f"TC-PERF-002-{idx}", "type": "performance", "metric": "settlement_p95_ms", "measured": 420, "threshold": 300, "requirement_ids": [f"REQ-004-{idx}"], "status": "failed", "created_at": now},
+            {"id": str(uuid4()), "project_id": pid, "test_id": f"TC-ACC-001-{idx}", "type": "accessibility", "wcag_violations": 0, "requirement_ids": [f"REQ-005-{idx}"], "status": "passed", "created_at": now},
+            {"id": str(uuid4()), "project_id": pid, "test_id": f"TC-ACC-002-{idx}", "type": "accessibility", "wcag_violations": 3, "requirement_ids": [f"REQ-006-{idx}"], "status": "failed", "created_at": now},
+            {"id": str(uuid4()), "project_id": pid, "test_id": f"TC-AI-001-{idx}", "type": "ai_eval", "metric": "toxicity", "score": 0.02, "threshold": 0.05, "direction": "lower_is_better", "status": "passed", "created_at": now},
+            {"id": str(uuid4()), "project_id": pid, "test_id": f"TC-AI-002-{idx}", "type": "ai_eval", "metric": "groundedness", "score": 0.78, "threshold": 0.85, "direction": "higher_is_better", "status": "failed", "created_at": now},
         ]
         await db.test_cases.insert_many([dict(t) for t in tests])
 

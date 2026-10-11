@@ -1,8 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import api from "../lib/api";
 import { PageHeader } from "../components/PageHeader";
 
+const MLOPS_TYPES = ["mlops_registry_initialised", "mlops_shadow_compare", "registry_promotion", "registry_shadow", "eval_run"];
+
 export default function Ledger() {
+  const navigate = useNavigate();
   const { data: entries, isLoading } = useQuery({ queryKey: ["ledger"], queryFn: () => api.get("/ledger").then((r) => r.data) });
   const { data: verify, refetch, isFetching } = useQuery({ queryKey: ["ledger-verify"], queryFn: () => api.get("/ledger/verify").then((r) => r.data), enabled: false });
 
@@ -37,16 +41,27 @@ export default function Ledger() {
             </tr>
           </thead>
           <tbody>
-            {[...(entries || [])].reverse().slice(0, 300).map((e) => (
-              <tr key={e.id} data-testid={`ledger-row-${e.seq}`} className="hover:bg-gray-50 transition-colors duration-100">
+            {[...(entries || [])].reverse().slice(0, 300).map((e) => {
+              const isMlops = MLOPS_TYPES.includes(e.payload_type);
+              return (
+              <tr key={e.id} data-testid={`ledger-row-${e.seq}`}
+                  onClick={isMlops ? () => navigate("/mlops") : undefined}
+                  className={`transition-colors duration-100 ${isMlops ? "cursor-pointer hover:bg-[#FFFBe6]" : "hover:bg-gray-50"}`}>
                 <td className="border-b border-gray-200 py-1.5 px-3">{e.seq}</td>
-                <td className="border-b border-gray-200 py-1.5 px-3">{e.payload_type}</td>
+                <td className="border-b border-gray-200 py-1.5 px-3">
+                  {isMlops ? (
+                    <span data-testid={`ledger-mlops-link-${e.seq}`} className="text-black underline decoration-[#FFE600] decoration-2 font-bold">
+                      {e.payload_type} ↗
+                    </span>
+                  ) : e.payload_type}
+                </td>
                 <td className="border-b border-gray-200 py-1.5 px-3 truncate max-w-[120px]">{e.payload_ref}</td>
                 <td className="border-b border-gray-200 py-1.5 px-3 truncate max-w-[140px] text-gray-400">{e.prev_hash.slice(0, 16)}…</td>
                 <td className="border-b border-gray-200 py-1.5 px-3 truncate max-w-[140px]">{e.hash.slice(0, 16)}…</td>
                 <td className="border-b border-gray-200 py-1.5 px-3 text-gray-500">{e.timestamp.slice(0, 19)}</td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
