@@ -45,6 +45,24 @@ LLM via Emergent universal key. User explicitly wants an ENTERPRISE build, not a
 - Both pages render (EY theme), audit log populates.
 
 ## Backlog / next
+- **2026-06-11 — Stage deep-dives + Shadow A/B + Ledger linkage + Full QA. DONE + QA-verified:**
+  - **Design & System-Test detectors** (replaces NOT_ASSESSED stubs): CTRL-04 Architecture
+    Conformance (design coverage of critical/high reqs + NFR allocation), CTRL-05 Threat Model
+    (security-relevant reqs addressed by a security design item, STRIDE/DPDP), CTRL-15 Security
+    DAST, CTRL-16 Performance threshold, CTRL-17 Accessibility (WCAG), CTRL-18 AI Model Eval
+    (ISO/IEC 42001). Seeded system-test test_cases (security/performance/accessibility/ai_eval).
+    Gates G3 (Design) and G6 (System Test) now compute real status (At Risk/Ready) instead of
+    "Not Assessed".
+  - **Shadow A/B** (`/mlops`): `POST /mlops/registry/{id}/shadow-compare` runs the candidate vs
+    the promoted baseline, returns F1 delta + promote/hold recommendation; UI chip + button.
+  - **Ledger linkage**: MLOps entries (mlops_registry_initialised, mlops_shadow_compare,
+    registry_promotion, eval_run) render as clickable links in the Audit Ledger → navigate to /mlops.
+  - **Full QA** via testing_agent (iteration_1): backend 15/15 pytest pass
+    (`/app/backend/tests/test_new_features.py`), frontend 100% on critical flows, no functional
+    defects. Added DialogDescription for a11y.
+
+- P1: Integration-test detectors (CTRL-13 API contract, CTRL-14 E2E) + G5 gate.
+- P2: routing matrix page; Stack Profiler onboarding; drift alert thresholds on the dashboard.
 - **2026-06-11 — MLOps layer + clear-key + sovereignty. DONE + verified:**
   - **MLOps / Learning Harness** (`/mlops`, `routers/mlops.py` + `evaluator.py`): governed
     registry (30 entries — 22 prompt packs, 4 model bindings, 4 detector rule-packs) with

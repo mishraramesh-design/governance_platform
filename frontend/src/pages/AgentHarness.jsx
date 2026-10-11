@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import api from "../lib/api";
 import { PageHeader } from "../components/PageHeader";
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "../components/ui/dialog";
 import { toast } from "sonner";
 
@@ -229,6 +229,9 @@ export default function AgentHarness() {
             <>
               <DialogHeader>
                 <DialogTitle className="font-[Chivo] font-black text-xl">{selected.name}</DialogTitle>
+                <DialogDescription className="text-xs text-gray-500">
+                  {selected.id} · capability role {selected.harness_role} · Level-2 reviewer {selected.l2_pairing}
+                </DialogDescription>
               </DialogHeader>
               <AgentDetail agent={selected} />
             </>
