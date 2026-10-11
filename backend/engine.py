@@ -304,7 +304,7 @@ async def apply_level2(db, control, finding):
         if l2_agent and l2_agent.get("uses_llm"):
             gw = await gateway.complete_agent(l2_id, "l2_independent_review", prompt, level=2, db=db)
         else:
-            gw = await gateway.complete("l2_independent_review", prompt, "independent-reviewer", db=db)
+            gw = await gateway.complete("l2_independent_review", prompt, "checker", db=db)
         l2_text = gw["text"]
         disagree = "disagree" in l2_text.lower()
         finding["l2_agent_id"] = l2_id

@@ -11,6 +11,7 @@ const NAV = [
       { to: "/projects", label: "Projects", testId: "nav-projects" },
       { to: "/agents", label: "Agents & SDLC Stages", testId: "nav-agents" },
       { to: "/harness", label: "Agent Harness", testId: "nav-harness" },
+      { to: "/agent-flow", label: "Agent Flow", testId: "nav-agent-flow" },
       { to: "/model-settings", label: "Model Gateway Settings", testId: "nav-model-settings" },
       { to: "/controls", label: "Control Catalog", testId: "nav-controls" },
       { to: "/gates", label: "Gate Readiness", testId: "nav-gates" },

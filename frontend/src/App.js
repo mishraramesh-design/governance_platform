@@ -9,6 +9,7 @@ import Dashboard from "@/pages/Dashboard";
 import Projects from "@/pages/Projects";
 import Agents from "@/pages/Agents";
 import AgentHarness from "@/pages/AgentHarness";
+import AgentFlow from "@/pages/AgentFlow";
 import ModelSettings from "@/pages/ModelSettings";
 import Controls from "@/pages/Controls";
 import Gates from "@/pages/Gates";
@@ -37,6 +38,7 @@ function App() {
               <Route path="/projects" element={<Projects />} />
               <Route path="/agents" element={<Agents />} />
               <Route path="/harness" element={<AgentHarness />} />
+              <Route path="/agent-flow" element={<AgentFlow />} />
               <Route path="/model-settings" element={<ModelSettings />} />
               <Route path="/controls" element={<Controls />} />
               <Route path="/gates" element={<Gates />} />

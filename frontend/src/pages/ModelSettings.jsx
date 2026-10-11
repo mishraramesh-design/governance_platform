@@ -5,156 +5,171 @@ import { PageHeader } from "../components/PageHeader";
 import { Switch } from "../components/ui/switch";
 import { toast } from "sonner";
 
-const PROFILE_META = {
-  primary: {
-    label: "Primary",
-    note: "Level-1 checks. The main model for requirement rewrites and report narratives.",
-  },
-  "independent-reviewer": {
-    label: "Independent Reviewer",
-    note: "Level-2 review. MUST be a different model family than primary for genuine independence.",
-  },
+const ROLE_META = {
+  maker: { label: "Maker", note: "Generative authoring — proposes findings, requirement rewrites, scenarios and report narrative." },
+  checker: { label: "Checker", note: "Independent review — re-performs and challenges peer work. Use a different model family." },
+  security: { label: "Security", note: "Security, privacy, data-protection, supplier and AI-risk assessment (may be kept on-prem)." },
+  verifier: { label: "Verifier", note: "Recomputes numbers, reconciles totals and verifies evidence integrity and citations." },
 };
 
-function ProfileEditor({ name, profile, availableModels, onChange }) {
-  const meta = PROFILE_META[name] || { label: name, note: "" };
-  const providers = Object.keys(availableModels);
+function RoleEditor({ name, profile, config, roleCount, onChange }) {
+  const meta = ROLE_META[name] || { label: name, note: "" };
+  const providers = config.providers;
   const provider = profile?.provider || providers[0];
-  const models = availableModels[provider] || [];
+  const isCustom = provider === "custom";
+  const models = config.available_models[provider] || [];
 
   return (
-    <div className="border border-gray-200 p-4" data-testid={`profile-editor-${name}`}>
+    <div className="border border-gray-200 p-4" data-testid={`role-editor-${name}`}>
       <div className="flex items-center justify-between mb-1">
-        <div className="font-[Chivo] font-bold text-sm">{meta.label}</div>
+        <div className="flex items-center gap-2">
+          <span className="font-[Chivo] font-bold text-sm">{meta.label}</span>
+          <span className="text-[10px] font-bold uppercase bg-black text-[#FFE600] px-1.5 py-0.5">{roleCount ?? 0} agents</span>
+        </div>
         <span className="font-mono text-[10px] uppercase tracking-wider text-gray-400">{name}</span>
       </div>
       <p className="text-xs text-gray-500 mb-3">{meta.note}</p>
-      <div className="grid grid-cols-2 gap-2">
+
+      <div className="grid grid-cols-2 gap-2 mb-2">
         <label className="block">
           <span className="text-[10px] uppercase tracking-wider text-gray-400">Provider</span>
           <select
-            data-testid={`profile-provider-${name}`}
+            data-testid={`role-provider-${name}`}
             value={provider}
             onChange={(e) => {
               const p = e.target.value;
-              onChange(name, { provider: p, model: (availableModels[p] || [])[0] });
+              const m = p === "custom" ? "" : (config.available_models[p] || [])[0];
+              onChange(name, { ...profile, provider: p, model: m });
             }}
             className="w-full mt-0.5 text-sm border border-gray-300 px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-[#FFE600]"
           >
-            {providers.map((p) => (
-              <option key={p} value={p}>{p}</option>
-            ))}
+            {providers.map((p) => <option key={p} value={p}>{p === "custom" ? "custom / on-prem" : p}</option>)}
           </select>
         </label>
         <label className="block">
           <span className="text-[10px] uppercase tracking-wider text-gray-400">Model</span>
-          <select
-            data-testid={`profile-model-${name}`}
-            value={profile?.model || models[0]}
-            onChange={(e) => onChange(name, { provider, model: e.target.value })}
-            className="w-full mt-0.5 text-sm border border-gray-300 px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-[#FFE600]"
-          >
-            {models.map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
+          {isCustom ? (
+            <input
+              data-testid={`role-model-${name}`}
+              value={profile?.model || ""}
+              onChange={(e) => onChange(name, { ...profile, model: e.target.value })}
+              placeholder="e.g. llama-3.1-70b-instruct"
+              className="w-full mt-0.5 text-sm border border-gray-300 px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-[#FFE600]"
+            />
+          ) : (
+            <select
+              data-testid={`role-model-${name}`}
+              value={profile?.model || models[0]}
+              onChange={(e) => onChange(name, { ...profile, model: e.target.value })}
+              className="w-full mt-0.5 text-sm border border-gray-300 px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-[#FFE600]"
+            >
+              {models.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+          )}
         </label>
       </div>
+
+      {isCustom && (
+        <label className="block mb-2">
+          <span className="text-[10px] uppercase tracking-wider text-gray-400">Base URL (OpenAI-compatible)</span>
+          <input
+            data-testid={`role-baseurl-${name}`}
+            value={profile?.base_url || ""}
+            onChange={(e) => onChange(name, { ...profile, base_url: e.target.value })}
+            placeholder="http://10.0.0.5:8000/v1"
+            className="w-full mt-0.5 text-sm border border-gray-300 px-2 py-1.5 bg-white font-mono focus:outline-none focus:ring-2 focus:ring-[#FFE600]"
+          />
+        </label>
+      )}
+
+      <label className="block mb-2">
+        <span className="text-[10px] uppercase tracking-wider text-gray-400">
+          API key {profile?.api_key_set ? "· stored" : config.emergent_key_available && !isCustom ? "· optional (falls back to Emergent key)" : ""}
+        </span>
+        <input
+          data-testid={`role-key-${name}`}
+          type="password"
+          value={profile?.api_key === "__stored__" ? "" : (profile?.api_key || "")}
+          onChange={(e) => onChange(name, { ...profile, api_key: e.target.value })}
+          placeholder={profile?.api_key_set ? "•••••••• (leave blank to keep)" : "paste key…"}
+          className="w-full mt-0.5 text-sm border border-gray-300 px-2 py-1.5 bg-white font-mono focus:outline-none focus:ring-2 focus:ring-[#FFE600]"
+        />
+      </label>
+
+      <label className="flex items-center gap-2 text-xs text-gray-600" data-testid={`role-localonly-${name}`}>
+        <input
+          type="checkbox"
+          checked={!!profile?.local_only}
+          onChange={(e) => onChange(name, { ...profile, local_only: e.target.checked })}
+          className="accent-black"
+        />
+        Local-only (block any external cloud call for this role)
+      </label>
+      {profile?.local_only && provider !== "custom" && (
+        <div className="mt-1 text-[11px] text-red-700">⚠ Local-only is on but provider is a cloud family — calls will be blocked and fall back to deterministic.</div>
+      )}
     </div>
   );
 }
 
 export default function ModelSettings() {
   const qc = useQueryClient();
-  const { data: config, isLoading } = useQuery({
-    queryKey: ["harness-config"],
-    queryFn: () => api.get("/harness/config").then((r) => r.data),
-  });
-  const { data: callsData } = useQuery({
-    queryKey: ["llm-calls"],
-    queryFn: () => api.get("/harness/llm-calls?limit=25").then((r) => r.data),
-    refetchInterval: 5000,
-  });
+  const { data: config, isLoading } = useQuery({ queryKey: ["harness-config"], queryFn: () => api.get("/harness/config").then((r) => r.data) });
+  const { data: agentsData } = useQuery({ queryKey: ["harness-agents"], queryFn: () => api.get("/harness/agents").then((r) => r.data) });
+  const { data: callsData } = useQuery({ queryKey: ["llm-calls"], queryFn: () => api.get("/harness/llm-calls?limit=25").then((r) => r.data), refetchInterval: 5000 });
 
   const [profiles, setProfiles] = useState(null);
   const [zeroLlm, setZeroLlm] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (config) {
-      setProfiles(config.capability_profiles);
-      setZeroLlm(config.zero_llm_mode);
-    }
+    if (config) { setProfiles(config.capability_profiles); setZeroLlm(config.zero_llm_mode); }
   }, [config]);
 
   const onChange = (name, prof) => setProfiles((p) => ({ ...p, [name]: prof }));
-
-  const sameFamily =
-    profiles?.primary && profiles?.["independent-reviewer"] &&
-    profiles.primary.provider === profiles["independent-reviewer"].provider;
 
   const save = async () => {
     setSaving(true);
     try {
       await api.put("/harness/config", { capability_profiles: profiles, zero_llm_mode: zeroLlm });
       qc.invalidateQueries({ queryKey: ["harness-config"] });
+      qc.invalidateQueries({ queryKey: ["agent-flow"] });
       toast.success("Gateway configuration saved");
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Save failed");
-    } finally {
-      setSaving(false);
-    }
+    } finally { setSaving(false); }
   };
 
   if (isLoading || !profiles) return <div className="text-sm text-gray-400">Loading…</div>;
+  const byRole = agentsData?.summary?.by_role || {};
 
   return (
     <div data-testid="model-settings-page">
       <PageHeader
         title="Model Gateway Settings"
-        subtitle="Configure the capability profiles the harness routes through. All agent and task calls go through this single gateway — nothing calls a model directly."
+        subtitle="Four capability roles — Maker, Checker, Security, Verifier — each mapped to a model. Point any role at a cloud provider (Emergent key or your own) or an on-prem, OpenAI-compatible endpoint. Every agent and task call routes through this single gateway."
       />
 
-      <div className="mb-4 flex items-center gap-2 text-xs">
-        <span className="text-gray-400 uppercase tracking-wider">Key mode:</span>
-        <span className="font-bold px-2 py-0.5 bg-gray-100" data-testid="key-mode">
-          {config.key_mode === "emergent_universal"
-            ? "Emergent Universal Key (multi-provider)"
-            : config.key_mode === "openai_only"
-            ? "OpenAI key only"
-            : "No key configured"}
-        </span>
+      <div className="mb-4 text-[11px] text-gray-500 bg-gray-50 border-l-4 border-[#FFE600] px-3 py-2" data-testid="key-storage-note">
+        Prototype note: keys you paste here are stored in the application database in plain text. Do not use production secrets in this demo environment.
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-        <ProfileEditor name="primary" profile={profiles.primary} availableModels={config.available_models} onChange={onChange} />
-        <ProfileEditor name="independent-reviewer" profile={profiles["independent-reviewer"]} availableModels={config.available_models} onChange={onChange} />
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-4">
+        {config.roles.map((r) => (
+          <RoleEditor key={r} name={r} profile={profiles[r]} config={config} roleCount={byRole[r]} onChange={onChange} />
+        ))}
       </div>
-
-      {sameFamily && (
-        <div className="mb-4 text-xs text-red-700 bg-red-50 border-l-4 border-red-600 px-3 py-2" data-testid="independence-warning">
-          ⚠ Primary and Independent Reviewer use the same provider family. Level-2 review will not be
-          model-independent. Choose a different provider for the reviewer.
-        </div>
-      )}
 
       <div className="border border-gray-200 p-4 flex items-center justify-between mb-6" data-testid="zero-llm-toggle">
         <div>
           <div className="font-[Chivo] font-bold text-sm">Zero-LLM mode</div>
-          <p className="text-xs text-gray-500 max-w-xl">
-            Disables all generation. Every agent and report falls back to deterministic output only — proving
-            the platform works without any model call.
-          </p>
+          <p className="text-xs text-gray-500 max-w-xl">Disables all generation. Every agent and report falls back to deterministic output only.</p>
         </div>
         <Switch data-testid="zero-llm-switch" checked={zeroLlm} onCheckedChange={setZeroLlm} />
       </div>
 
-      <button
-        data-testid="save-config-btn"
-        onClick={save}
-        disabled={saving}
-        className="px-5 py-2 text-sm font-bold bg-black text-white hover:bg-[#FFE600] hover:text-black transition-colors disabled:opacity-50 mb-8"
-      >
+      <button data-testid="save-config-btn" onClick={save} disabled={saving}
+        className="px-5 py-2 text-sm font-bold bg-black text-white hover:bg-[#FFE600] hover:text-black transition-colors disabled:opacity-50 mb-8">
         {saving ? "Saving…" : "Save configuration"}
       </button>
 
@@ -167,7 +182,7 @@ export default function ModelSettings() {
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 border-y border-gray-300">
-                {["Time", "Task", "Agent", "Level", "Profile", "Provider", "Model", "Mode", "Latency", "Input hash"].map((h) => (
+                {["Time", "Task", "Agent", "Level", "Role", "Provider", "Model", "Mode", "Latency"].map((h) => (
                   <th key={h} className="text-left text-[10px] uppercase tracking-wider text-gray-600 font-bold py-2 px-3">{h}</th>
                 ))}
               </tr>
@@ -184,11 +199,10 @@ export default function ModelSettings() {
                   <td className="border-b border-gray-200 py-1.5 px-3 text-xs font-mono">{c.model_used}</td>
                   <td className="border-b border-gray-200 py-1.5 px-3 text-xs">{c.mode}</td>
                   <td className="border-b border-gray-200 py-1.5 px-3 text-xs">{c.latency_ms ?? 0} ms</td>
-                  <td className="border-b border-gray-200 py-1.5 px-3 font-mono text-[10px] text-gray-400">{(c.masked_input_hash || "").slice(0, 10)}…</td>
                 </tr>
               ))}
               {!callsData?.calls?.length && (
-                <tr><td colSpan={10} className="py-6 text-center text-sm text-gray-400">No calls logged yet. Run an agent in the Harness sandbox.</td></tr>
+                <tr><td colSpan={9} className="py-6 text-center text-sm text-gray-400">No calls logged yet. Run an agent in the Harness sandbox.</td></tr>
               )}
             </tbody>
           </table>

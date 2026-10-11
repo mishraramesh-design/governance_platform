@@ -334,6 +334,22 @@ _L2_AGENT = {
     "A19": "A05", "A20": "A13", "A21": None, "A22": None,
 }
 
+# Four-role capability model (Maker / Checker / Security / Verifier). Each agent is
+# mapped to the capability profile whose model best fits its duty, giving a clean
+# maker-checker-security-verifier separation across the harness.
+HARNESS_ROLES = ["maker", "checker", "security", "verifier"]
+_AGENT_ROLE = {
+    # Maker - generative authoring, proposals, planning narrative
+    "A01": "maker", "A02": "maker", "A03": "maker", "A04": "maker", "A07": "maker",
+    "A12": "maker", "A14": "maker", "A21": "maker", "A22": "maker",
+    # Checker - independent review / re-performance of peer work
+    "A08": "checker", "A09": "checker", "A11": "checker", "A13": "checker",
+    # Security - security, privacy, data protection, supplier & AI risk
+    "A05": "security", "A06": "security", "A16": "security", "A17": "security", "A19": "security",
+    # Verifier - recompute numbers, reconcile, evidence integrity & metrics
+    "A10": "verifier", "A15": "verifier", "A18": "verifier", "A20": "verifier",
+}
+
 
 def _derive_uses_llm(a: dict) -> bool:
     role = (a.get("role_of_llm") or "").strip().lower()
@@ -345,6 +361,7 @@ for _a in _AGENTS:
     _a = dict(_a)
     _a["uses_llm"] = _derive_uses_llm(_a)
     _a["l2_agent_id"] = _L2_AGENT.get(_a["id"])
+    _a["harness_role"] = _AGENT_ROLE.get(_a["id"], "maker")
     _a["system_prompt"] = _build_system_prompt(_a)
     AGENT_PROFILES[_a["id"]] = _a
 

@@ -45,6 +45,27 @@ LLM via Emergent universal key. User explicitly wants an ENTERPRISE build, not a
 - Both pages render (EY theme), audit log populates.
 
 ## Backlog / next
+- **2026-06-11 — Four-role gateway + on-prem + Agent Flow. DONE + verified:**
+  - Replaced primary/independent-reviewer with four capability roles **Maker / Checker /
+    Security / Verifier** (agent_profiles `_AGENT_ROLE`: Maker 9, Checker 4, Security 5,
+    Verifier 4). Each agent routes through its role; L1 uses the agent's role, L2 uses the
+    paired reviewer agent's role.
+  - Gateway supports **on-prem / custom OpenAI-compatible endpoints** (openai SDK + base_url)
+    alongside cloud (OpenAI/Anthropic/Gemini). Per-role **BYOK key + base_url + local_only**
+    flag (local_only blocks external cloud calls). Keys stored in DB (plain — prototype note
+    shown in UI), masked as `__stored__` on GET, preserved on blank save.
+    Verified: config CRUD, custom-missing-base_url→400, key preservation, live role routing
+    (A02 Maker→OpenAI, A05 Security→Gemini), Zero-LLM mode.
+  - New **Agent Flow** page (`/agent-flow`): in-app visual two-level flow (Event → L1 agent →
+    re-perform → L2 reviewer → Human gate) with role legend + live model-per-role. No external
+    Langflow (deliberate — keeps determinism/auditability; user agreed).
+  - Model Settings rewritten for the four roles + on-prem fields. Harness cards show role chips.
+
+- P1 (NEXT): MLOps / Learning Harness platform (workbook sheet 22) — model/prompt/rule-pack
+  registry with versions + promotion gates, evaluation harness runs (golden sets/canaries),
+  precision/recall & drift metrics, observability of every agent run.
+- P1: Deep-dive remaining stages; replace NOT_ASSESSED control stubs with real detectors.
+- P2: "Clear key" affordance in Model Settings; routing matrix page; Stack Profiler onboarding.
 - P1: Deep-dive stages — wire real detectors/controls for Requirements, Security & Privacy,
   Traceability, Release Readiness beyond current heuristics; replace NOT_ASSESSED stubs.
 - P1: Route engine.apply_level2 & report narratives through `complete_agent` per the two-level

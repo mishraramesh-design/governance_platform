@@ -114,6 +114,7 @@ function AgentDetail({ agent }) {
         <ClassChip value={agent.agent_class} />
         <span className="text-[10px] uppercase tracking-wider text-gray-400">{agent.stage}</span>
       </div>
+      <Row label="Capability role">{agent.harness_role} {agent.uses_llm ? "(model-backed)" : "(deterministic, no LLM)"}</Row>
       <Row label="Mandate">{agent.responsibilities}</Row>
       <Row label="Role of the LLM">{agent.role_of_llm}</Row>
       <Row label="Skills & Knowledge">{agent.skills}</Row>
@@ -197,9 +198,9 @@ export default function AgentHarness() {
                 >
                   <div className="flex items-center justify-between mb-1.5">
                     <span className="font-mono text-xs font-bold text-black">{a.id}</span>
-                    <span className="text-[10px] font-bold uppercase text-gray-400 group-hover:text-black">
-                      {a.uses_llm ? "LLM" : "Deterministic"}
-                    </span>
+                    <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 ${
+                      { maker: "bg-[#FFE600] text-black", checker: "bg-black text-[#FFE600]", security: "bg-red-600 text-white", verifier: "bg-gray-600 text-white" }[a.harness_role] || "bg-gray-200"
+                    }`}>{a.harness_role}</span>
                   </div>
                   <div className="font-[Chivo] font-bold text-sm mb-1">{a.name}</div>
                   <div className="text-xs text-gray-500 mb-2 line-clamp-2">{a.responsibilities}</div>
