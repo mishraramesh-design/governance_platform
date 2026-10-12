@@ -45,6 +45,26 @@ LLM via Emergent universal key. User explicitly wants an ENTERPRISE build, not a
 - Both pages render (EY theme), audit log populates.
 
 ## Backlog / next
+- **2026-06-11 — Live GitHub repository audit. DONE + QA-verified (iteration_2):**
+  - `repo_ingest.py` + `POST /api/repo-audit/ingest`: clones a PUBLIC repo read-only
+    (shallow, 120s timeout, GIT_TERMINAL_PROMPT=0), profiles the stack (A21 — languages,
+    frameworks, files/LOC), runs the deterministic detectors (secrets/PII/logging/static) over
+    real source, records findings with two-level review, and generates the author + team-lead
+    reports and the gate pack. Creates a project per audit; all events/findings/reports/audit
+    appended to the ledger. Validation: 400 on bad URL, 502 on clone failure.
+  - `/repo-audit` page rewritten to run the live audit and render stack profile, finding
+    summary (severity chips), both reports (narrative + sections + ledger hash) and the 10-gate
+    pack, then switches the active project and links to Findings/Gates. ProjectContext gained
+    `refreshProjects`.
+  - Verified on https://github.com/mishraramesh-design/myauction-node: 73 findings
+    (66 static-code, 7 PII), React/Express/FastAPI/PostgreSQL, 100 files/~12.8k LOC, G4/G8 At Risk.
+    Backend 11/11 pytest (`/app/backend/tests/test_repo_audit.py`), frontend flow 100%.
+  - Known limitation: each audit creates a new project (no idempotency yet); framework detection
+    is substring-based. Secrets detector needs quotes so unquoted env/yaml secrets are not flagged.
+
+- P1: Repo-audit idempotency (re-audit updates the same project); run Design/System-Test and
+  Requirements controls against real repo artifacts where present (docs/specs).
+- P2: broaden secret detector to unquoted env/yaml assignments; routing matrix; drift alerts.
 - **2026-06-11 — Stage deep-dives + Shadow A/B + Ledger linkage + Full QA. DONE + QA-verified:**
   - **Design & System-Test detectors** (replaces NOT_ASSESSED stubs): CTRL-04 Architecture
     Conformance (design coverage of critical/high reqs + NFR allocation), CTRL-05 Threat Model
