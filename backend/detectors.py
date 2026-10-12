@@ -14,7 +14,28 @@ SECRET_PATTERNS = [
     ("slack_token", re.compile(r"xox[baprs]-[0-9A-Za-z\-]{10,}")),
     ("private_key_block", re.compile(r"-----BEGIN (RSA |EC )?PRIVATE KEY-----")),
     ("generic_secret_assignment", re.compile(r"(?:api[_-]?key|secret|password|passwd)\s*[:=]\s*[\"']([A-Za-z0-9_\-/+]{10,})[\"']", re.IGNORECASE)),
+    ("sensitive_assignment_unquoted", re.compile(
+        r"(?im)^[\s\-]*[A-Za-z0-9_.]*(?:password|passwd|secret|token|api[_-]?key|apikey|jwt|credential|access[_-]?key|private[_-]?key|db[_-]?pass)[A-Za-z0-9_.]*\s*[:=]\s*(?P<val>[^\s#\"'\n]{6,})")),
 ]
+
+SECRET_PLACEHOLDERS = {"changeme", "change_me", "your_password", "your_secret", "yoursecret",
+                       "example", "placeholder", "none", "null", "true", "false", "secret",
+                       "password", "token", "xxxxxx", "redacted", "dummy"}
+
+
+def _unquoted_secret_value(raw_val: str):
+    """Resolve the real hardcoded value from an unquoted assignment, or None to skip."""
+    v = (raw_val or "").strip().strip(",;")
+    if v.startswith("${") or v.startswith("$("):
+        if ":-" in v:  # env ref WITH a hardcoded default: ${VAR:-default}
+            v = v.split(":-", 1)[1].rstrip("}").strip()
+        else:
+            return None  # pure env reference, not a hardcoded secret
+    if v.startswith(("process.env", "import.meta", "os.environ", "<", "{{")):
+        return None
+    if len(v) < 6 or v.lower() in SECRET_PLACEHOLDERS:
+        return None
+    return v
 
 PII_PATTERNS = [
     ("aadhaar", re.compile(r"\b\d{4}\s?\d{4}\s?\d{4}\b")),
@@ -48,7 +69,13 @@ def scan_secrets(text: str):
     seen = set()
     for label, pattern in SECRET_PATTERNS:
         for m in pattern.finditer(text or ""):
-            raw = m.group(0)
+            if label == "sensitive_assignment_unquoted":
+                val = _unquoted_secret_value(m.group("val"))
+                if not val:
+                    continue
+                raw = val
+            else:
+                raw = m.group(0)
             if raw in seen:
                 continue
             seen.add(raw)

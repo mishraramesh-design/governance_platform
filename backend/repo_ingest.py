@@ -44,13 +44,21 @@ def _clone_and_scan(git_url: str) -> dict:
 
         languages, frameworks = {}, set()
         scanned, file_count, total_loc = [], 0, 0
+        readme = {"present": False, "sections": 0, "documents_api": False, "chars": 0}
+        openapi = {"present": False, "endpoints": 0}
+        tests, code_file_count, ai_refs = [], 0, False
+        source_ext = {".js", ".jsx", ".ts", ".tsx", ".py", ".java", ".go", ".rb", ".php", ".cs"}
         for root, dirs, files in os.walk(tmp):
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
             for fn in files:
                 ext = os.path.splitext(fn)[1].lower()
+                low = fn.lower()
+                relp = os.path.relpath(os.path.join(root, fn), tmp).replace("\\", "/").lower()
                 if ext in LANG_MAP:
                     languages[LANG_MAP[ext]] = languages.get(LANG_MAP[ext], 0) + 1
-                if ext not in CODE_EXT:
+                is_readme = low.startswith("readme")
+                is_spec = ("openapi" in low or "swagger" in low) and ext in {".yml", ".yaml", ".json"}
+                if ext not in CODE_EXT and not is_readme and not is_spec:
                     continue
                 fpath = os.path.join(root, fn)
                 try:
@@ -60,29 +68,57 @@ def _clone_and_scan(git_url: str) -> dict:
                         text = fh.read()
                 except Exception:
                     continue
+                rel = os.path.relpath(fpath, tmp)
+                tl = text.lower()
+                # spec signals
+                if is_readme:
+                    readme = {"present": True, "sections": sum(1 for ln in text.splitlines() if ln.lstrip().startswith("#")),
+                              "documents_api": ("/api" in tl or bool(re.search(r"\b(get|post|put|delete|patch)\b\s+/", tl))),
+                              "chars": len(text)}
+                if is_spec:
+                    openapi = {"present": True, "endpoints": len(re.findall(r"^\s{2,6}/[\w{}\-/]+:\s*$", text, re.M)) or len(re.findall(r"\"/[\w{}\-/]+\"\s*:", text))}
+                is_test = (any(k in low for k in [".test.", ".spec.", "_test.", "test_"]) or "__tests__" in relp or "/tests/" in ("/" + relp) or "/test/" in ("/" + relp))
+                if any(k in tl for k in ["openai", "langchain", "anthropic", "gemini", "llm", "gpt-", "tensorflow", "pytorch", "huggingface"]):
+                    ai_refs = True
+                if ext not in CODE_EXT:
+                    continue
                 file_count += 1
                 total_loc += text.count("\n") + 1
-                rel = os.path.relpath(fpath, tmp)
+                if is_test:
+                    nm = relp + " " + tl[:400]
+                    cat = ("security" if any(k in nm for k in ["security", "auth.test", "xss", "sqli"]) else
+                           "performance" if any(k in nm for k in ["perf", "load", "stress", "k6", "jmeter", "benchmark"]) else
+                           "accessibility" if any(k in nm for k in ["a11y", "accessib", "axe"]) else
+                           "ai_eval" if any(k in nm for k in ["eval", "prompt", "model.test"]) else
+                           "e2e" if any(k in nm for k in ["e2e", "integration", "cypress", "playwright", ".spec."]) else "unit")
+                    tests.append({"path": rel, "category": cat})
+                elif ext in source_ext:
+                    code_file_count += 1
                 if fn == "package.json" and '"react"' in text:
                     frameworks.add("React")
-                if "express" in text.lower():
+                if "express" in tl:
                     frameworks.add("Express")
-                if "fastapi" in text.lower():
+                if "fastapi" in tl:
                     frameworks.add("FastAPI")
-                if "mongoose" in text.lower() or "mongodb" in text.lower():
+                if "mongoose" in tl or "mongodb" in tl:
                     frameworks.add("MongoDB")
-                if "postgres" in text.lower() or "pg(" in text.lower():
+                if "postgres" in tl or "pg(" in tl:
                     frameworks.add("PostgreSQL")
                 sec, pii, log, stat = scan_secrets(text), scan_pii(text), scan_logging_leak(text), static_code_issues(text)
                 if sec or pii or log or stat:
                     scanned.append({"path": rel, "secrets": sec, "pii": pii, "logging": log, "static": stat})
                 if file_count >= MAX_FILES:
                     break
+        test_cats = {}
+        for t in tests:
+            test_cats[t["category"]] = test_cats.get(t["category"], 0) + 1
         profile = {
             "languages": dict(sorted(languages.items(), key=lambda x: -x[1])),
             "frameworks": sorted(frameworks),
             "code_files_scanned": file_count,
             "approx_loc": total_loc,
+            "spec": {"readme": readme, "openapi": openapi, "tests_total": len(tests),
+                     "tests_by_category": test_cats, "source_files": code_file_count, "ai_refs": ai_refs},
         }
         return {"profile": profile, "scanned": scanned}
     finally:
@@ -102,15 +138,24 @@ async def ingest_repo(db, git_url: str, name: str = None):
     repo_name = name or git_url.rstrip("/").split("/")[-1]
     now = datetime.now(timezone.utc).isoformat()
 
-    # provisional tier from what we find (refined below)
-    project = {
-        "id": str(uuid4()), "name": repo_name,
-        "description": f"Live IV&V audit of {git_url}",
-        "integrity_tier": "T2", "stage": "Repository Audit", "repo_url": git_url,
-        "source": "github_live", "created_at": now,
-    }
-    await db.projects.insert_one(dict(project))
-    await ledger_mod.append_to_ledger(db, "project", project["id"], {"name": repo_name, "repo_url": git_url})
+    # Re-audit in place: reuse an existing project for the same repo URL.
+    existing = await db.projects.find_one({"repo_url": git_url.strip(), "source": "github_live"}, {"_id": 0})
+    if existing:
+        project = existing
+        pid = project["id"]
+        for coll in ("findings", "events", "reports", "repo_audits"):
+            await db[coll].delete_many({"project_id": pid})
+        await db.projects.update_one({"id": pid}, {"$set": {"stage": "Repository Audit", "last_audited_at": now}})
+        await ledger_mod.append_to_ledger(db, "project_reaudit", pid, {"name": repo_name, "repo_url": git_url})
+    else:
+        project = {
+            "id": str(uuid4()), "name": repo_name,
+            "description": f"Live IV&V audit of {git_url}",
+            "integrity_tier": "T2", "stage": "Repository Audit", "repo_url": git_url.strip(),
+            "source": "github_live", "created_at": now,
+        }
+        await db.projects.insert_one(dict(project))
+        await ledger_mod.append_to_ledger(db, "project", project["id"], {"name": repo_name, "repo_url": git_url})
 
     event = {
         "id": str(uuid4()), "project_id": project["id"], "event_type": "repo_audit",
@@ -158,6 +203,59 @@ async def ingest_repo(db, git_url: str, name: str = None):
                 [{"type": s["type"], "masked": s["type"], "hash": ""} for s in item["static"]])
             f["level2_status"] = "confirmed_by_recompute"
             findings.append(f)
+
+    # ---- Spec-derived findings (Requirements & System-Test) from README / OpenAPI / tests ----
+    spec = profile.get("spec", {})
+    rd, oa = spec.get("readme", {}), spec.get("openapi", {})
+    tcats = spec.get("tests_by_category", {})
+
+    def spec_finding(cid, cname, agent, sev, verdict, reason, remedy, tags):
+        f = engine.build_finding(project, event, cid, cname, agent,
+            sev if verdict == "FAIL" else "low", 85, verdict, reason, tags, remedy,
+            project["id"], "project", "deterministic_spec", [])
+        f["level2_status"] = "confirmed_by_recompute"
+        return f
+
+    req_ok = rd.get("present") and rd.get("sections", 0) >= 2 and (oa.get("present") or rd.get("documents_api"))
+    findings.append(spec_finding("CTRL-01", "Requirements & API Spec Quality", "A02", "high",
+        "PASS" if req_ok else "FAIL",
+        (f"README present ({rd.get('sections')} sections) and API documented"
+         + (f" via OpenAPI spec ({oa.get('endpoints')} endpoints)." if oa.get("present") else " in README.")) if req_ok
+        else f"Insufficient requirement/API documentation: README present={rd.get('present')} sections={rd.get('sections')}, OpenAPI spec present={oa.get('present')}.",
+        "Add a structured README and an OpenAPI/Swagger contract documenting every endpoint." if not req_ok else "No action required.",
+        ["requirements", "documentation", "api_spec"]))
+
+    src = max(spec.get("source_files", 0), 1)
+    ttot = spec.get("tests_total", 0)
+    ratio = round(ttot / src, 2)
+    test_ok = ttot > 0 and ratio >= 0.1
+    findings.append(spec_finding("CTRL-11", "Unit Test Adequacy", "A06", "high",
+        "PASS" if test_ok else "FAIL",
+        f"{ttot} test file(s) across {src} source file(s) (ratio {ratio}).",
+        "Add automated tests; target at least one test file per ~10 source files for critical paths." if not test_ok else "No action required.",
+        ["testing", "coverage"]))
+
+    for cid, cname, cat, agent in [
+        ("CTRL-15", "Security Testing (DAST)", "security", "A05"),
+        ("CTRL-16", "Performance Threshold Check", "performance", "A08"),
+        ("CTRL-17", "Accessibility Check", "accessibility", "A08"),
+    ]:
+        present = tcats.get(cat, 0) > 0
+        findings.append(spec_finding(cid, cname, agent, "high" if cat == "security" else "medium",
+            "PASS" if present else "FAIL",
+            f"{tcats.get(cat, 0)} {cat} test file(s) found in the repository." if present
+            else f"No {cat} tests found in the repository.",
+            f"Add {cat} tests to the pipeline before release." if not present else "No action required.",
+            ["system_test", cat]))
+
+    if spec.get("ai_refs"):
+        present = tcats.get("ai_eval", 0) > 0
+        findings.append(spec_finding("CTRL-18", "AI Model Evaluation", "A16", "high",
+            "PASS" if present else "FAIL",
+            f"{tcats.get('ai_eval', 0)} AI-evaluation test file(s) found; repo references AI/LLM libraries." if present
+            else "Repo references AI/LLM libraries but no AI-evaluation tests (ISO/IEC 42001) were found.",
+            "Add an AI evaluation suite (toxicity, groundedness, robustness) per ISO/IEC 42001." if not present else "No action required.",
+            ["system_test", "ai_governance"]))
 
     if findings:
         await db.findings.insert_many([dict(f) for f in findings])
