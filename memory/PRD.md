@@ -45,6 +45,22 @@ LLM via Emergent universal key. User explicitly wants an ENTERPRISE build, not a
 - Both pages render (EY theme), audit log populates.
 
 ## Backlog / next
+- **2026-06-11 — Repo-audit enhancements (broader secrets, re-audit-in-place, spec ingestion). DONE + QA-verified (iteration_3, 8/8):**
+  - **Broader secrets** (`detectors.py`): new `sensitive_assignment_unquoted` pattern catches
+    unquoted env/YAML secrets (docker-compose `DB_PASSWORD`, `JWT_SECRET: ${VAR:-default}`) while
+    excluding pure env refs / placeholders. Shared with the MLOps evaluator — secrets F1 still 0.8
+    (no regression).
+  - **Re-audit in place** (`repo_ingest.py`): a repeat audit of the same repo URL reuses the same
+    project (matches by repo_url+source, clears old findings/events/reports/repo_audits, keeps the
+    append-only ledger). No duplicate projects.
+  - **Spec ingestion**: `_clone_and_scan` now collects README/OpenAPI/test signals; ingest emits
+    real-verdict findings for CTRL-01 (Requirements & API Spec), CTRL-11 (Unit Test Adequacy),
+    CTRL-15/16/17 (Security/Perf/Accessibility test presence) and CTRL-18 (AI eval, when AI libs
+    referenced). Gates **G2 (Requirements)** and **G6 (System Test)** now compute real status.
+  - Verified on myauction-node: 83 findings incl 4 critical unquoted secrets; G2/G4/G6/G8 At Risk.
+
+- P1: unit test asserting CTRL->gate mapping; pull OpenAPI endpoint list into Traceability (CTRL-03).
+- P2: evidence-pack export (PDF/Docx), routing matrix page, drift alerts, private-repo token support.
 - **2026-06-11 — Live GitHub repository audit. DONE + QA-verified (iteration_2):**
   - `repo_ingest.py` + `POST /api/repo-audit/ingest`: clones a PUBLIC repo read-only
     (shallow, 120s timeout, GIT_TERMINAL_PROMPT=0), profiles the stack (A21 — languages,
