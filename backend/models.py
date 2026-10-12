@@ -22,8 +22,9 @@ class AdjudicationDecisionRequest(BaseModel):
 
 
 class RepoAuditRequest(BaseModel):
-    project_id: str
+    project_id: Optional[str] = None
     github_url: str
+    name: Optional[str] = None
 
 
 class RuntimeAnalyzeRequest(BaseModel):

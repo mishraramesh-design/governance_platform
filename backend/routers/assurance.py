@@ -9,6 +9,7 @@ from database import db
 from models import RepoAuditRequest, RuntimeAnalyzeRequest, EdgeClientSimulateRequest
 from detectors import scan_secrets, scan_pii
 import engine
+import repo_ingest
 import ledger as ledger_mod
 
 router = APIRouter()
@@ -58,6 +59,16 @@ async def simulate_edge_client(payload: EdgeClientSimulateRequest):
     event_type = payload.event_type or "commit_pushed"
     result = await engine.run_event(db, payload.project_id, event_type, payload.source_ref, triggered_by=client["id"])
     return {"mode": "platform_routed_event", "client": client, "result": result}
+
+
+@router.post("/repo-audit/ingest")
+async def ingest_repo_audit(payload: RepoAuditRequest):
+    try:
+        return await repo_ingest.ingest_repo(db, payload.github_url, payload.name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
 
 
 @router.post("/repo-audit/simulate")

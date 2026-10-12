@@ -7,6 +7,8 @@ export function ProjectProvider({ children }) {
   const [projects, setProjects] = useState([]);
   const [projectId, setProjectId] = useState(() => localStorage.getItem("gov_project_id") || "");
 
+  const refreshProjects = () => api.get("/projects").then((res) => { setProjects(res.data); return res.data; });
+
   useEffect(() => {
     api.get("/projects").then((res) => {
       setProjects(res.data);
@@ -24,7 +26,7 @@ export function ProjectProvider({ children }) {
   const currentProject = projects.find((p) => p.id === projectId);
 
   return (
-    <ProjectContext.Provider value={{ projects, projectId, setProjectId, currentProject }}>
+    <ProjectContext.Provider value={{ projects, projectId, setProjectId, currentProject, refreshProjects }}>
       {children}
     </ProjectContext.Provider>
   );
