@@ -3,13 +3,14 @@ import re
 from uuid import uuid4
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 
 from database import db
 from models import RepoAuditRequest, RuntimeAnalyzeRequest, EdgeClientSimulateRequest
 from detectors import scan_secrets, scan_pii
 import engine
 import repo_ingest
+import evidence_pack
 import ledger as ledger_mod
 
 router = APIRouter()
@@ -64,11 +65,47 @@ async def simulate_edge_client(payload: EdgeClientSimulateRequest):
 @router.post("/repo-audit/ingest")
 async def ingest_repo_audit(payload: RepoAuditRequest):
     try:
-        return await repo_ingest.ingest_repo(db, payload.github_url, payload.name)
+        return await repo_ingest.ingest_repo(db, payload.github_url, payload.name, payload.git_token)
     except ValueError as e:
         raise HTTPException(400, str(e))
     except RuntimeError as e:
         raise HTTPException(502, str(e))
+
+
+@router.get("/repo-audit/{project_id}/evidence-pack")
+async def evidence_pack_endpoint(project_id: str, format: str = "pdf"):
+    fmt = "docx" if format.lower() == "docx" else "pdf"
+    project = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    if not project:
+        raise HTTPException(404, "project not found")
+    audit = await db.repo_audits.find_one({"project_id": project_id}, {"_id": 0}, sort=[("created_at", -1)])
+    findings = await db.findings.find({"project_id": project_id}, {"_id": 0}).to_list(5000)
+    reports = await db.reports.find({"project_id": project_id}, {"_id": 0}).to_list(50)
+    gates = await engine.compute_gate_status(db, project_id)
+    verify = await ledger_mod.verify_integrity(db)
+    refs = {project_id} | {f["id"] for f in findings} | {r["id"] for r in reports}
+    if audit:
+        refs.add(audit["id"])
+    led = await db.ledger.find({"payload_ref": {"$in": list(refs)}}, {"_id": 0}).sort("seq", 1).to_list(5000)
+    data = {
+        "project": project, "profile": _audit_profile(audit),
+        "audit": audit or {}, "findings": findings, "reports": reports, "gates": gates,
+        "endpoints": (audit or {}).get("endpoints", []),
+        "ledger_entries": led, "ledger_verify": verify,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    content, mime, ext = evidence_pack.build(data, fmt)
+    fname = f"evidence_pack_{project['name']}.{ext}".replace(" ", "_")
+    return Response(content=content, media_type=mime,
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+def _audit_profile(audit):
+    audit = audit or {}
+    return {"languages": {l: 1 for l in audit.get("detected_languages", [])},
+            "frameworks": audit.get("frameworks", []),
+            "code_files_scanned": audit.get("code_files_scanned", 0),
+            "approx_loc": audit.get("approx_loc", 0)}
 
 
 @router.post("/repo-audit/simulate")

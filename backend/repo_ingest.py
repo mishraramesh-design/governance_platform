@@ -29,24 +29,35 @@ LANG_MAP = {".js": "JavaScript", ".jsx": "JavaScript (React)", ".ts": "TypeScrip
 MAX_FILES = 4000
 MAX_BYTES = 350_000
 
+EP_JS = re.compile(r"\b(?:app|router|api|route)\.(get|post|put|delete|patch)\s*\(\s*[`'\"]([^`'\"]+)[`'\"]", re.I)
+EP_PY = re.compile(r"@(?:app|router)\.(get|post|put|delete|patch)\s*\(\s*['\"]([^'\"]+)['\"]", re.I)
 
-def _clone_and_scan(git_url: str) -> dict:
+
+def _auth_url(git_url: str, token: str = None) -> str:
+    if token and git_url.startswith("https://github.com/"):
+        return git_url.replace("https://", f"https://x-access-token:{token}@", 1)
+    return git_url
+
+
+def _clone_and_scan(git_url: str, token: str = None) -> dict:
     """Blocking: clone (shallow) + profile + scan. Run via asyncio.to_thread."""
     tmp = tempfile.mkdtemp(prefix="ivv_repo_")
     try:
         env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
         proc = subprocess.run(
-            ["git", "clone", "--depth", "1", git_url, tmp],
+            ["git", "clone", "--depth", "1", _auth_url(git_url, token), tmp],
             capture_output=True, text=True, timeout=120, env=env,
         )
         if proc.returncode != 0:
-            raise RuntimeError(f"git clone failed: {proc.stderr.strip()[:300]}")
+            msg = proc.stderr.strip()[:300].replace(token or "\x00", "***") if token else proc.stderr.strip()[:300]
+            raise RuntimeError(f"git clone failed: {msg}")
 
         languages, frameworks = {}, set()
         scanned, file_count, total_loc = [], 0, 0
         readme = {"present": False, "sections": 0, "documents_api": False, "chars": 0}
         openapi = {"present": False, "endpoints": 0}
         tests, code_file_count, ai_refs = [], 0, False
+        endpoints, test_blobs = [], []
         source_ext = {".js", ".jsx", ".ts", ".tsx", ".py", ".java", ".go", ".rb", ".php", ".cs"}
         for root, dirs, files in os.walk(tmp):
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
@@ -92,8 +103,12 @@ def _clone_and_scan(git_url: str) -> dict:
                            "ai_eval" if any(k in nm for k in ["eval", "prompt", "model.test"]) else
                            "e2e" if any(k in nm for k in ["e2e", "integration", "cypress", "playwright", ".spec."]) else "unit")
                     tests.append({"path": rel, "category": cat})
+                    test_blobs.append((rel, tl))
                 elif ext in source_ext:
                     code_file_count += 1
+                    for rx in (EP_JS, EP_PY):
+                        for mm in rx.finditer(text):
+                            endpoints.append({"method": mm.group(1).upper(), "path": mm.group(2), "defined_in": rel})
                 if fn == "package.json" and '"react"' in text:
                     frameworks.add("React")
                 if "express" in tl:
@@ -112,13 +127,22 @@ def _clone_and_scan(git_url: str) -> dict:
         test_cats = {}
         for t in tests:
             test_cats[t["category"]] = test_cats.get(t["category"], 0) + 1
+        uniq = {}
+        for e in endpoints:
+            uniq.setdefault((e["method"], e["path"]), e)
+        endpoints = list(uniq.values())
+        for e in endpoints:
+            e["tested_by"] = sorted({rel for rel, tl in test_blobs if e["path"].lower() in tl})[:5]
+        endpoints = endpoints[:300]
         profile = {
             "languages": dict(sorted(languages.items(), key=lambda x: -x[1])),
             "frameworks": sorted(frameworks),
             "code_files_scanned": file_count,
             "approx_loc": total_loc,
             "spec": {"readme": readme, "openapi": openapi, "tests_total": len(tests),
-                     "tests_by_category": test_cats, "source_files": code_file_count, "ai_refs": ai_refs},
+                     "tests_by_category": test_cats, "source_files": code_file_count, "ai_refs": ai_refs,
+                     "endpoints": endpoints, "endpoint_count": len(endpoints),
+                     "untested_endpoints": sum(1 for e in endpoints if not e["tested_by"])},
         }
         return {"profile": profile, "scanned": scanned}
     finally:
@@ -128,11 +152,11 @@ def _clone_and_scan(git_url: str) -> dict:
 HIGH_PII = {"pii:aadhaar", "pii:pan", "pii:card_number", "pii:gstin"}
 
 
-async def ingest_repo(db, git_url: str, name: str = None):
+async def ingest_repo(db, git_url: str, name: str = None, git_token: str = None):
     if not re.match(r"^https://github\.com/[\w.\-]+/[\w.\-]+/?$", git_url.strip()):
         raise ValueError("Please provide a valid public GitHub repository URL, e.g. https://github.com/org/repo")
 
-    scan = await asyncio.to_thread(_clone_and_scan, git_url.strip())
+    scan = await asyncio.to_thread(_clone_and_scan, git_url.strip(), git_token)
     profile, scanned = scan["profile"], scan["scanned"]
 
     repo_name = name or git_url.rstrip("/").split("/")[-1]
@@ -257,6 +281,19 @@ async def ingest_repo(db, git_url: str, name: str = None):
             "Add an AI evaluation suite (toxicity, groundedness, robustness) per ISO/IEC 42001." if not present else "No action required.",
             ["system_test", "ai_governance"]))
 
+    # ---- Traceability from spec/routes: endpoints <-> tests (CTRL-03) ----
+    eps = spec.get("endpoints", [])
+    if eps:
+        orphans = [e for e in eps if not e.get("tested_by")]
+        verdict = "FAIL" if orphans else "PASS"
+        findings.append(spec_finding("CTRL-03", "API Traceability", "A03", "medium", verdict,
+            f"{len(eps)} API endpoint(s) discovered; {len(orphans)} have no referencing test (orphan)." if orphans
+            else f"All {len(eps)} discovered API endpoints are referenced by at least one test.",
+            "Add tests that exercise each untested endpoint to close the traceability gap." if orphans else "No action required.",
+            ["traceability", "api"]))
+        for e in orphans[:25]:
+            findings[-1]["evidence"].append({"type": "untested_endpoint", "masked": f"{e['method']} {e['path']}", "hash": ""})
+
     if findings:
         await db.findings.insert_many([dict(f) for f in findings])
         for f in findings:
@@ -276,6 +313,8 @@ async def ingest_repo(db, git_url: str, name: str = None):
         "suggested_integrity_tier": tier,
         "code_files_scanned": profile["code_files_scanned"], "approx_loc": profile["approx_loc"],
         "folder_map": [], "note": "Live repository cloned and scanned (read-only) by the platform.",
+        "endpoints": profile.get("spec", {}).get("endpoints", []),
+        "endpoint_count": profile.get("spec", {}).get("endpoint_count", 0),
         "created_at": now,
     }
     await db.repo_audits.insert_one(dict(audit))

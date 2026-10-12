@@ -13,10 +13,12 @@ export default function RepoAudit() {
   const { setProjectId, refreshProjects } = useProject();
   const navigate = useNavigate();
   const [url, setUrl] = useState("https://github.com/mishraramesh-design/myauction-node");
+  const [token, setToken] = useState("");
   const [result, setResult] = useState(null);
+  const BACKEND = process.env.REACT_APP_BACKEND_URL;
 
   const audit = useMutation({
-    mutationFn: () => api.post("/repo-audit/ingest", { github_url: url }),
+    mutationFn: () => api.post("/repo-audit/ingest", { github_url: url, git_token: token || null }),
     onSuccess: async (res) => {
       setResult(res.data);
       await refreshProjects();
@@ -35,6 +37,10 @@ export default function RepoAudit() {
           <label className="block text-[10px] uppercase tracking-wider font-bold text-gray-500 mb-1">Public GitHub Repository URL</label>
           <input data-testid="repo-url-input" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://github.com/org/repo" className="w-full border border-gray-300 px-3 py-2 text-sm font-mono" />
         </div>
+        <div className="min-w-[220px]">
+          <label className="block text-[10px] uppercase tracking-wider font-bold text-gray-500 mb-1">Git token (private repos, optional)</label>
+          <input data-testid="repo-token-input" type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="ghp_…" className="w-full border border-gray-300 px-3 py-2 text-sm font-mono" />
+        </div>
         <button data-testid="run-repo-audit-btn" onClick={() => audit.mutate()} disabled={!url || audit.isPending} className="bg-[#FFE600] text-black hover:bg-black hover:text-[#FFE600] font-bold tracking-tight px-4 py-2 text-xs border border-black transition-colors duration-100 disabled:opacity-50">
           {audit.isPending ? "Cloning & scanning…" : "Run Live Audit"}
         </button>
@@ -44,6 +50,17 @@ export default function RepoAudit() {
 
       {result && (
         <div data-testid="repo-audit-result" className="space-y-6">
+          {/* Evidence pack export */}
+          <div className="border border-gray-200 p-4 flex flex-wrap items-center justify-between gap-2 bg-gray-50">
+            <div>
+              <div className="font-[Chivo] font-bold text-sm">Evidence Pack</div>
+              <p className="text-xs text-gray-500">One-click auditor bundle: profile, findings, reports, API traceability and ledger hashes.</p>
+            </div>
+            <div className="flex gap-2">
+              <a data-testid="download-pdf-btn" href={`${BACKEND}/api/repo-audit/${result.project.id}/evidence-pack?format=pdf`} target="_blank" rel="noreferrer" className="text-xs font-bold bg-black text-white px-3 py-2 hover:bg-[#FFE600] hover:text-black transition-colors">Download PDF</a>
+              <a data-testid="download-docx-btn" href={`${BACKEND}/api/repo-audit/${result.project.id}/evidence-pack?format=docx`} target="_blank" rel="noreferrer" className="text-xs font-bold border border-black px-3 py-2 hover:bg-black hover:text-[#FFE600] transition-colors">Download DOCX</a>
+            </div>
+          </div>
           {/* Stack profile */}
           <div className="border border-gray-200 p-4">
             <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-gray-500 mb-2">Stack profile · {result.project.name} · suggested tier {result.project.integrity_tier}</div>
@@ -84,6 +101,32 @@ export default function RepoAudit() {
               ))}
             </div>
           ))}
+
+          {/* API traceability */}
+          {result.audit?.endpoints?.length > 0 && (
+            <div className="border border-gray-200 p-4" data-testid="traceability-section">
+              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-gray-500 mb-2">
+                API Traceability · {result.audit.endpoint_count} endpoints ({result.audit.endpoints.filter((e) => !e.tested_by?.length).length} untested)
+              </div>
+              <div className="overflow-x-auto max-h-72 overflow-y-auto border border-gray-100">
+                <table className="w-full text-xs">
+                  <thead><tr className="bg-gray-50 border-b border-gray-200">
+                    {["Method", "Path", "Defined in", "Tested by"].map((h) => <th key={h} className="text-left px-2 py-1.5 text-[10px] uppercase tracking-wider text-gray-500">{h}</th>)}
+                  </tr></thead>
+                  <tbody>
+                    {result.audit.endpoints.slice(0, 60).map((e, i) => (
+                      <tr key={i} data-testid={`endpoint-row-${i}`} className="border-b border-gray-100">
+                        <td className="px-2 py-1 font-mono font-bold">{e.method}</td>
+                        <td className="px-2 py-1 font-mono">{e.path}</td>
+                        <td className="px-2 py-1 text-gray-500 truncate max-w-[200px]">{e.defined_in}</td>
+                        <td className="px-2 py-1">{e.tested_by?.length ? <span className="text-green-700">{e.tested_by.length} test(s)</span> : <span className="text-red-700 font-bold">untested</span>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {/* Gate pack */}
           <div className="border border-gray-200 p-4">
