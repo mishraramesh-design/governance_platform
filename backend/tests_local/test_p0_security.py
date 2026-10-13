@@ -60,3 +60,8 @@ def test_cors_not_wildcard(client):
     r = client.options("/api/", headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "GET"})
     assert r.headers.get("access-control-allow-origin") != "*"
     assert r.headers.get("access-control-allow-origin") != "https://evil.example"
+
+
+def test_health_is_public(client):
+    r = client.get("/api/health")
+    assert r.status_code == 200 and r.json() == {"status": "ok"}

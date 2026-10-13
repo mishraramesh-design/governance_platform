@@ -1,0 +1,44 @@
+# Production stack: pulls prebuilt images from Docker Hub (built by .github/workflows/docker-publish.yml).
+#   cp .env.example .env   # fill in values
+#   docker compose pull && docker compose up -d
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    image: ${IMAGE_REPO:-mishramesh/governance}:backend-${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      DB_NAME: ${DB_NAME:-governance}
+      DEMO_MODE: ${DEMO_MODE:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
+      BOOTSTRAP_ADMIN_TOKEN: ${BOOTSTRAP_ADMIN_TOKEN:-}
+      EDGE_SIGNING_SECRET: ${EDGE_SIGNING_SECRET:?set EDGE_SIGNING_SECRET in .env}
+      MASKING_KEY: ${MASKING_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    # not published: only the frontend container reaches it
+
+  frontend:
+    image: ${IMAGE_REPO:-mishramesh/governance}:frontend-${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${HTTP_PORT:-80}:80"
+
+volumes:
+  mongo_data:

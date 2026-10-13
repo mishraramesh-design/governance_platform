@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import FastAPI, APIRouter, Depends
+from fastapi import FastAPI, APIRouter, Depends, HTTPException
 from starlette.middleware.cors import CORSMiddleware
 import os
 
@@ -13,6 +13,16 @@ from routers import auth as auth_routes, admin as admin_routes, routing as routi
 
 app = FastAPI(title="SDLC Governance & Assurance Platform")
 api_router = APIRouter(prefix="/api")
+
+
+@api_router.get("/health")
+async def health():
+    """Public liveness/readiness probe (no data returned)."""
+    try:
+        await db.command("ping")
+    except Exception:
+        raise HTTPException(503, "database unavailable")
+    return {"status": "ok"}
 
 
 @api_router.get("/")
