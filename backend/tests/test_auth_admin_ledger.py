@@ -5,7 +5,7 @@ import os
 import pytest
 import requests
 
-BASE = os.environ.get("REACT_APP_BACKEND_URL", "https://stage-agent-gov.preview.emergentagent.com").rstrip("/")
+BASE = os.environ.get("REACT_APP_BACKEND_URL", "http://localhost:8001").rstrip("/")
 
 ADMIN_TOKEN = "gov-demo-u-ramesh-token-2026"
 NON_ADMIN_TOKEN = "gov-demo-u-rohit-token-2026"

@@ -11,20 +11,8 @@ os.environ.setdefault("DB_NAME", "gov_test")
 os.environ.setdefault("EDGE_SIGNING_SECRET", "test-edge-secret")
 os.environ.setdefault("MASKING_KEY", "test-mask-key")
 os.environ.setdefault("BOOTSTRAP_ADMIN_TOKEN", "test-bootstrap-admin-token")
-os.environ["EMERGENT_LLM_KEY"] = ""
-
-import types  # noqa: E402
-
-# emergentintegrations is an Emergent-hosted package that is not installable offline; stub it.
-_ei = types.ModuleType("emergentintegrations")
-_llm = types.ModuleType("emergentintegrations.llm")
-_chat = types.ModuleType("emergentintegrations.llm.chat")
-class _Dummy:
-    def __init__(self, *a, **k): pass
-    def __getattr__(self, n): return lambda *a, **k: self
-for _n in ("LlmChat", "UserMessage", "TextDelta", "StreamDone"):
-    setattr(_chat, _n, _Dummy)
-sys.modules.update({"emergentintegrations": _ei, "emergentintegrations.llm": _llm, "emergentintegrations.llm.chat": _chat})
+for _k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"):
+    os.environ[_k] = ""
 
 import mongomock_motor  # noqa: E402
 import motor.motor_asyncio as _motor  # noqa: E402

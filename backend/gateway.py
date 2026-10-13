@@ -2,7 +2,7 @@
 
 Capability roles (maker / checker / security / verifier) are configurable per
 deployment and may each point at a cloud provider (OpenAI / Anthropic / Gemini,
-via the Emergent universal key or a user-supplied key) OR an on-prem,
+via provider API keys from the environment or a per-role key) OR an on-prem,
 OpenAI-COMPATIBLE endpoint (custom base_url + key). Each role also carries a
 "local_only" flag that forbids any external call.
 
@@ -18,7 +18,7 @@ from uuid import uuid4
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
-from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
+import httpx
 from openai import AsyncOpenAI
 
 import agent_profiles
@@ -26,8 +26,16 @@ import agent_profiles
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+# Provider keys come from the environment (or a per-role key saved in Model Settings).
+PROVIDER_KEY_ENV = {"openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY", "gemini": "GEMINI_API_KEY"}
+
+
+def env_key(provider: str):
+    return os.environ.get(PROVIDER_KEY_ENV.get(provider, ""), "") or None
+
+
+def any_env_key_available() -> bool:
+    return any(env_key(p) for p in PROVIDER_KEY_ENV)
 
 # Set True by the seeder so bulk demo generation stays fast and free (deterministic).
 FORCE_ZERO_LLM = False
@@ -132,7 +140,7 @@ def _runnable(profile: dict):
             return False, "zero-llm", None, "custom provider missing base_url"
         return True, None, profile.get("api_key") or "sk-local", None
     # cloud provider
-    key = profile.get("api_key") or EMERGENT_LLM_KEY or (OPENAI_API_KEY if provider == "openai" else None)
+    key = profile.get("api_key") or env_key(provider)
     if not key:
         return False, "zero-llm", None, "no api key"
     return True, None, key, None
@@ -149,15 +157,31 @@ async def _run_llm(system_message: str, masked_input: str, profile: dict, key: s
             temperature=0,
         )
         return (resp.choices[0].message.content or "").strip()
-    chat = LlmChat(api_key=key, session_id=f"govplat-{session_tag}-{int(time.time()*1000)}",
-                   system_message=system_message).with_model(provider, model)
-    full = ""
-    async for ev in chat.stream_message(UserMessage(text=masked_input or "")):
-        if isinstance(ev, TextDelta):
-            full += ev.content
-        elif isinstance(ev, StreamDone):
-            break
-    return full.strip()
+    timeout = float(os.environ.get("LLM_TIMEOUT", "60"))
+    if provider == "openai":
+        client = AsyncOpenAI(api_key=key, timeout=timeout)
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": system_message}, {"role": "user", "content": masked_input or ""}],
+        )
+        return (resp.choices[0].message.content or "").strip()
+    async with httpx.AsyncClient(timeout=timeout) as http:
+        if provider == "anthropic":
+            r = await http.post("https://api.anthropic.com/v1/messages",
+                                headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+                                json={"model": model, "max_tokens": 1024, "system": system_message,
+                                      "messages": [{"role": "user", "content": masked_input or ""}]})
+            r.raise_for_status()
+            return "".join(b.get("text", "") for b in r.json().get("content", [])).strip()
+        if provider == "gemini":
+            r = await http.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                                headers={"x-goog-api-key": key},
+                                json={"systemInstruction": {"parts": [{"text": system_message}]},
+                                      "contents": [{"role": "user", "parts": [{"text": masked_input or ""}]}]})
+            r.raise_for_status()
+            parts = (r.json().get("candidates") or [{}])[0].get("content", {}).get("parts", [])
+            return "".join(p.get("text", "") for p in parts).strip()
+    raise ValueError(f"unsupported provider '{provider}'")
 
 
 async def _dispatch(system, masked_input, profile, task, base_record, db, zero_text):

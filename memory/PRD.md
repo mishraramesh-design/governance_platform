@@ -3,9 +3,9 @@
 ## Original problem statement
 Clickable, data-backed prototype of an SDLC Governance & Assurance Platform for a systems
 integrator. OBSERVE · collect EVIDENCE · ADVISE only (read-only toward client systems).
-Faithful to `Emergent_Prototype_Prompt.md` + `IVV_Governance_Platform_Design_Workbook_1.xlsx`.
+Faithful to the original prototype brief + `IVV_Governance_Platform_Design_Workbook_1.xlsx`.
 EY theme (white/black/grey + #FFE600). Stack: React + Tailwind + Shadcn / FastAPI / MongoDB.
-LLM via Emergent universal key. User explicitly wants an ENTERPRISE build, not a thin POC.
+LLM via provider API keys from the environment. User explicitly wants an ENTERPRISE build, not a thin POC.
 
 ## Key reference sheets in the workbook
 02_Agent_Catalog, 02A_Two_Level_Model, 16_Agent_Reclass (22 agents A01–A22),
@@ -29,7 +29,7 @@ LLM via Emergent universal key. User explicitly wants an ENTERPRISE build, not a
     tri-state discipline). Plus the 18-row Two-Level assurance model.
   - `gateway.py` rewritten into a true model gateway: configurable capability profiles
     (primary / independent-reviewer / none) stored in `harness_config`; multi-provider routing
-    via Emergent universal key (verified: L1=OpenAI gpt-5.6-terra, L2=Anthropic claude-sonnet-5-5
+    via provider API keys (verified: L1=OpenAI gpt-5.6-terra, L2=Anthropic claude-sonnet-5-5
     — different families); global Zero-LLM mode; Service agents stay deterministic (no LLM);
     every call logged to `llm_calls` (hashes + latency, never raw text).
   - `routers/harness.py`: GET /harness/agents, /agents/{id}, /two-level-model, /config,
@@ -39,7 +39,7 @@ LLM via Emergent universal key. User explicitly wants an ENTERPRISE build, not a
     independence warning, Zero-LLM switch, live audit log. Nav + routes wired.
 
 ## Verified
-- 22 agents served w/ prompts; config shows key_mode=emergent_universal.
+- 22 agents served w/ prompts; config shows key_mode=environment.
 - Live sandbox: A02 L1→OpenAI, L2→Anthropic; A08 Service→deterministic (no LLM).
 - Config PUT round-trips; invalid model → 400; Zero-LLM mode disables generation.
 - Both pages render (EY theme), audit log populates.
@@ -117,7 +117,7 @@ LLM via Emergent universal key. User explicitly wants an ENTERPRISE build, not a
     golden sets + seeded canaries → precision/recall/F1 + canary recall + drift vs baseline;
     **promotion gate** (rule-pack F1 ≥ 0.8, else 400); live governance metrics (zero-LLM share,
     not-assessed rate, L1/L2 disagreement, noise ratio). Every evaluate/promote appended to ledger.
-  - **Clear-key control**: `__clear__` sentinel wipes a stored key (reverts to Emergent key);
+  - **Clear-key control**: `__clear__` sentinel wipes a stored key (reverts to the environment key);
     UI button per role. Verified.
   - **Sovereignty routing**: config `sovereignty` {T0..T4}; `complete_agent(tier=...)` blocks a
     regulated tier on a cloud provider (mode `sovereignty-blocked`) unless the role is on a local
@@ -156,7 +156,7 @@ LLM via Emergent universal key. User explicitly wants an ENTERPRISE build, not a
 - P2: Multi-model expansion when user supplies more keys.
 
 ## Notes
-- Emergent universal key in backend/.env as EMERGENT_LLM_KEY. User's OpenAI key retained as fallback.
+- Provider keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY) are read from backend/.env.
 - Custom opaque Bearer-token auth added (no external IdP). See test_credentials.md for demo users/tokens.
 
 ## 2026-06 — Auth, RBAC, Segregation of Duties & Ledger Fix (DONE, tested 15/15)

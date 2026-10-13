@@ -102,7 +102,7 @@ async def get_config():
         "available_models": gateway.AVAILABLE_MODELS,
         "providers": list(gateway.AVAILABLE_MODELS.keys()),
         "roles": agent_profiles.HARNESS_ROLES,
-        "emergent_key_available": bool(gateway.EMERGENT_LLM_KEY),
+        "env_key_available": gateway.any_env_key_available(),
     }
 
 
@@ -127,7 +127,7 @@ async def put_config(body: ConfigUpdate, _gov=Depends(auth.require_governance)):
                 raise HTTPException(400, f"role '{name}': custom provider needs a model name")
         elif model not in gateway.AVAILABLE_MODELS[provider]:
             raise HTTPException(400, f"model '{model}' not available for provider '{provider}'")
-        # key: '__clear__' wipes the stored key (revert to Emergent); '' or placeholder keeps it
+        # key: '__clear__' wipes the stored key (revert to the environment key); '' or placeholder keeps it
         incoming_key = prof.get("api_key") or ""
         old = current["capability_profiles"].get(name) or {}
         if incoming_key == "__clear__":
