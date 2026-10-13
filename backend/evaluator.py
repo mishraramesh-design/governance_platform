@@ -19,8 +19,8 @@ GOLDEN_SETS = {
         ('api_endpoint = "https://api.example.com/v1"', False),
     ],
     "india_pii": [
-        ('aadhaar = "234567890123"', True),
-        ('pan = "ABCDE1234F"', True),
+        ('aadhaar = "234567890124"', True),
+        ('pan = "AAAPL1234C"', True),
         ('mobile = "9876543210"', True),
         ('card = "4111 1111 1111 1111"', True),
         ('order_id = "ORD-10045"', False),
@@ -48,7 +48,7 @@ GOLDEN_SETS = {
 # Canaries: known-positive injected flaws used to measure recall only.
 CANARIES = {
     "secrets": ['SECRET_TOKEN = "xoxb-123456789012-abcdefghijklmnop"', 'aws_secret = "AKIAZZZZZZZZZZZZZZZZ"'],
-    "india_pii": ['gstin = "22ABCDE1234F1Z5"', 'phone = "+91 9123456780"'],
+    "india_pii": ['gstin = "22AAAPL1234C1ZO"', 'phone = "+91 9123456780"'],
     "logging_leak": ['logger.warning("otp=%s", otp)'],
     "static_code": ['exec(payload)'],
 }

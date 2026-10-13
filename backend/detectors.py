@@ -47,10 +47,90 @@ PII_PATTERNS = [
     ("email", re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")),
 ]
 
-LOGGING_LEAK_PATTERN = re.compile(
-    r"(log(?:ger)?\.\w+|print)\s*\([^)]{0,200}(password|passwd|token|secret|aadhaar|pan_no|card_number|otp|cvv)[^)]{0,200}\)",
-    re.IGNORECASE,
-)
+LOG_CALL_PATTERN = re.compile(r"(?:log(?:ger)?\.\w+|console\.\w+|print)\s*\((?P<args>[^)]{0,400})\)", re.IGNORECASE)
+LOG_SENSITIVE_RE = re.compile(r"\b(password|passwd|pwd|secret|token|api[_-]?key|apikey|jwt|aadhaar|pan_no|card_number|cardnumber|otp|cvv|ssn|credential|private[_-]?key)\b", re.IGNORECASE)
+STRING_LITERAL_RE = re.compile(r"'[^']*'|\"[^\"]*\"|`[^`]*`")
+FORMAT_PLACEHOLDER_RE = re.compile(r"%[sdrf]|\{\}|\$\{[^}]+\}|\{[A-Za-z0-9_]+\}")
+
+# Context hints: a 10-digit number near these words is an id/amount, not a mobile.
+MOBILE_SKIP_CONTEXT = re.compile(r"\b(id|ids|timestamp|epoch|order|orderid|txn|transaction|count|qty|quantity|amount|price|total|port|seq|sequence|millis|nanos|invoice|ref|reference)\b", re.IGNORECASE)
+MOBILE_KEEP_CONTEXT = re.compile(r"\b(mobile|phone|contact|whatsapp|otp|sms|cell|msisdn|tel)\b", re.IGNORECASE)
+PAN_FOURTH = set("PCHFATBLJG")
+
+# --- checksum / structural validators ---
+_VERHOEFF_D = [
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 2, 3, 4, 0, 6, 7, 8, 9, 5], [2, 3, 4, 0, 1, 7, 8, 9, 5, 6],
+    [3, 4, 0, 1, 2, 8, 9, 5, 6, 7], [4, 0, 1, 2, 3, 9, 5, 6, 7, 8], [5, 9, 8, 7, 6, 0, 4, 3, 2, 1],
+    [6, 5, 9, 8, 7, 1, 0, 4, 3, 2], [7, 6, 5, 9, 8, 2, 1, 0, 4, 3], [8, 7, 6, 5, 9, 3, 2, 1, 0, 4],
+    [9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
+]
+_VERHOEFF_P = [
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 5, 7, 6, 2, 8, 3, 0, 9, 4], [5, 8, 0, 3, 7, 9, 6, 1, 4, 2],
+    [8, 9, 1, 6, 0, 4, 3, 5, 2, 7], [9, 4, 5, 3, 1, 2, 6, 8, 7, 0], [4, 2, 8, 6, 5, 7, 3, 9, 0, 1],
+    [2, 7, 9, 3, 8, 0, 6, 4, 1, 5], [7, 0, 4, 6, 9, 1, 3, 2, 5, 8],
+]
+_GSTIN_CODE = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def verhoeff_valid(num: str) -> bool:
+    if not num.isdigit():
+        return False
+    c = 0
+    for i, item in enumerate(reversed(num)):
+        c = _VERHOEFF_D[c][_VERHOEFF_P[i % 8][int(item)]]
+    return c == 0
+
+
+def luhn_valid(num: str) -> bool:
+    if not num.isdigit():
+        return False
+    total, alt = 0, False
+    for ch in reversed(num):
+        d = int(ch)
+        if alt:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+        alt = not alt
+    return total % 10 == 0
+
+
+def aadhaar_valid(raw: str) -> bool:
+    digits = re.sub(r"\s", "", raw)
+    return len(digits) == 12 and digits[0] in "23456789" and verhoeff_valid(digits)
+
+
+def card_valid(raw: str) -> bool:
+    digits = re.sub(r"[ -]", "", raw)
+    return 13 <= len(digits) <= 19 and luhn_valid(digits)
+
+
+def pan_valid(raw: str) -> bool:
+    return len(raw) == 10 and raw[3] in PAN_FOURTH
+
+
+def gstin_valid(raw: str) -> bool:
+    g = raw.upper()
+    if len(g) != 15 or not g[:2].isdigit():
+        return False
+    if not (1 <= int(g[:2]) <= 38):
+        return False
+    factor, total = 1, 0
+    for ch in g[:14]:
+        if ch not in _GSTIN_CODE:
+            return False
+        v = _GSTIN_CODE.index(ch) * factor
+        total += v // 36 + v % 36
+        factor = 2 if factor == 1 else 1
+    check = (36 - (total % 36)) % 36
+    return _GSTIN_CODE[check] == g[14]
+
+
+def _line_of(text: str, start: int, end: int) -> str:
+    ls = text.rfind("\n", 0, start) + 1
+    le = text.find("\n", end)
+    return text[ls:(le if le != -1 else len(text))]
 
 
 def mask_value(value: str) -> str:
@@ -86,9 +166,19 @@ def scan_secrets(text: str):
 def scan_pii(text: str):
     findings = []
     seen = set()
+    text = text or ""
+    validators = {"aadhaar": aadhaar_valid, "pan": pan_valid, "gstin": gstin_valid, "card_number": card_valid}
     for label, pattern in PII_PATTERNS:
-        for m in pattern.finditer(text or ""):
+        for m in pattern.finditer(text):
             raw = m.group(0)
+            validate = validators.get(label)
+            if validate and not validate(raw):
+                continue
+            if label == "mobile_in":
+                line = _line_of(text, m.start(), m.end())
+                ctx = re.sub(r"([a-z])([A-Z])", r"\1 \2", re.sub(r"[_\W]+", " ", line))
+                if MOBILE_SKIP_CONTEXT.search(ctx) and not MOBILE_KEEP_CONTEXT.search(ctx):
+                    continue
             if raw in seen:
                 continue
             seen.add(raw)
@@ -99,7 +189,17 @@ def scan_pii(text: str):
 
 def scan_logging_leak(text: str):
     findings = []
-    for m in LOGGING_LEAK_PATTERN.finditer(text or ""):
+    for m in LOG_CALL_PATTERN.finditer(text or ""):
+        args = m.group("args")
+        # A sensitive keyword only inside a plain string literal with NO variable is not a leak.
+        has_keyword = bool(LOG_SENSITIVE_RE.search(args))
+        has_detected_value = bool(scan_secrets(args)) or bool(scan_pii(args))
+        outside_strings = STRING_LITERAL_RE.sub("", args)
+        has_variable = bool(re.search(r"[A-Za-z_][A-Za-z0-9_.]*", outside_strings))
+        has_format = bool(FORMAT_PLACEHOLDER_RE.search(args))
+        is_leak = has_detected_value or (has_keyword and (has_variable or has_format))
+        if not is_leak:
+            continue
         raw = m.group(0)
         findings.append({"type": "logging_leak", "masked": mask_value(raw)[:48] + "...", "hash": keyed_hash(raw), "severity": "high"})
     return findings
