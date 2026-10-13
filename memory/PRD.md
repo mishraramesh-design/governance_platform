@@ -45,6 +45,17 @@ LLM via Emergent universal key. User explicitly wants an ENTERPRISE build, not a
 - Both pages render (EY theme), audit log populates.
 
 ## Backlog / next
+- **2026-06-11 — Detector checksum/structural hardening (detectors.py only). DONE + QA-verified (iteration_4, 16/16):**
+  - Aadhaar = 12 digits + first digit 2-9 + Verhoeff; Card = Luhn + len 13-19; PAN 4th char in
+    [PCHFATBLJG]; GSTIN state 01-38 + check char; Mobile ignores longer runs & id/timestamp/epoch
+    context; Logging-leak flags only sensitive VARIABLE/value args (not plain string literals).
+  - Evaluator PII golden fixtures updated to checksum-valid specimens. Before→After: india_pii
+    precision 0.857→1.0 (FP removed), recall 1.0, f1 0.923→1.0; secrets 1.0/0.667/0.8 unchanged;
+    logging/static 1.0. Promotion threshold unchanged (0.8). Tests: `tests/test_detectors.py`.
+  - NOTE (out of scope, flagged by QA): `/api/ledger/verify` reports the hash chain broken at
+    seq 726 — pre-existing, unrelated to detectors; needs separate investigation.
+
+- P1: investigate ledger chain break (seq 726); auto-refresh MLOps metrics after detector version bumps.
 - **2026-06-11 — Repo-audit enhancements (broader secrets, re-audit-in-place, spec ingestion). DONE + QA-verified (iteration_3, 8/8):**
   - **Broader secrets** (`detectors.py`): new `sensitive_assignment_unquoted` pattern catches
     unquoted env/YAML secrets (docker-compose `DB_PASSWORD`, `JWT_SECRET: ${VAR:-default}`) while
