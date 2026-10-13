@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List, Any
 from pydantic import BaseModel, field_validator, model_validator
 
 
@@ -66,6 +66,16 @@ class EdgeClientSimulateRequest(BaseModel):
     note: Optional[str] = ""
     event_type: Optional[str] = None
     source_ref: Optional[str] = None
+
+
+class EdgeClientBundleRequest(BaseModel):
+    client_id: str      # EC-01 (Copilot) | EC-02 (Droid) — unverified client models only
+    project_id: str
+    role: str
+    prompt_hash: str
+    tool_calls: List[Any] = []
+    input_hashes: List[str] = []
+    output_text: str = ""
 
 
 class ArtifactGenerateRequest(BaseModel):

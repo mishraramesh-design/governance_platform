@@ -261,6 +261,40 @@ def scan_logging_leak(text: str, key=None):
     return findings
 
 
+def mask_sensitive_text(text: str, key=None):
+    """Return (masked_text, detections). Reuses the scanner patterns/validators but
+    substitutes every detected raw value with its masked fragment, so the raw value
+    is never persisted. Used for storing edge-client output_text safely."""
+    text = text or ""
+    detections = []
+    validators = {"aadhaar": aadhaar_valid, "pan": pan_valid, "gstin": gstin_valid, "card_number": card_valid}
+
+    for label, pattern in SECRET_PATTERNS:
+        def _repl(m, label=label):
+            if label == "sensitive_assignment_unquoted":
+                val = _unquoted_secret_value(m.group("val"))
+                if not val:
+                    return m.group(0)
+                detections.append({"type": f"secret:{label}", "masked": mask_value(val), "hash": keyed_hash(val, key)})
+                return m.group(0).replace(val, mask_value(val))
+            raw = m.group(0)
+            detections.append({"type": f"secret:{label}", "masked": mask_value(raw), "hash": keyed_hash(raw, key)})
+            return mask_value(raw)
+        text = pattern.sub(_repl, text)
+
+    for label, pattern in PII_PATTERNS:
+        def _repl(m, label=label):
+            raw = m.group(0)
+            validate = validators.get(label)
+            if validate and not validate(raw):
+                return raw
+            detections.append({"type": f"pii:{label}", "masked": mask_value(raw), "hash": keyed_hash(raw, key)})
+            return mask_value(raw)
+        text = pattern.sub(_repl, text)
+
+    return text, detections
+
+
 def static_code_issues(text: str):
     issues = []
     t = text or ""

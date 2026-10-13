@@ -1,4 +1,7 @@
 import hashlib
+import hmac
+import json
+import os
 import re
 from uuid import uuid4
 from datetime import datetime, timezone
@@ -6,8 +9,8 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Response, Depends
 
 from database import db
-from models import RepoAuditRequest, RuntimeAnalyzeRequest, EdgeClientSimulateRequest
-from detectors import scan_secrets, scan_pii
+from models import RepoAuditRequest, RuntimeAnalyzeRequest, EdgeClientSimulateRequest, EdgeClientBundleRequest
+from detectors import scan_secrets, scan_pii, mask_sensitive_text, get_project_key
 import engine
 import repo_ingest
 import evidence_pack
@@ -96,6 +99,123 @@ async def simulate_edge_client(payload: EdgeClientSimulateRequest,
     result = await engine.run_event(db, payload.project_id, event_type, payload.source_ref,
                                     triggered_by=f"{client['id']}:{user['name']}")
     return {"mode": "platform_routed_event", "client": client, "result": result}
+
+
+# ---------------------------------------------------------------------------
+# Edge-client signed bundles (EC-01 Copilot, EC-02 Droid). These are client-generated
+# and UNVERIFIED: they can never create/change/remove a PASS/FAIL verdict. Each bundle
+# is hashed (SHA-256 over canonical JSON), HMAC-signed with a per-user key derived from
+# a server secret, and anchored in the tamper-evident ledger.
+# ---------------------------------------------------------------------------
+UNVERIFIED_CLIENTS = ("EC-01", "EC-02")
+
+
+def _edge_secret() -> bytes:
+    s = os.environ.get("EDGE_SIGNING_SECRET")
+    if not s:
+        raise HTTPException(500, "EDGE_SIGNING_SECRET is not configured")
+    return s.encode()
+
+
+def _edge_user_key(user_id: str) -> bytes:
+    # Per-user signing key derived from the server secret; never stored, never returned.
+    return hmac.new(_edge_secret(), user_id.encode(), hashlib.sha256).digest()
+
+
+def _edge_sign(user_id: str, bundle_hash: str) -> str:
+    return hmac.new(_edge_user_key(user_id), bundle_hash.encode(), hashlib.sha256).hexdigest()
+
+
+def _canonical_bundle(doc: dict) -> str:
+    core = {
+        "client_id": doc["client_id"],
+        "project_id": doc["project_id"],
+        "prompt_hash": doc["prompt_hash"],
+        "tool_calls": doc["tool_calls"],
+        "input_hashes": doc["input_hashes"],
+        "output_text": doc["output_text"],
+        "role": doc["role"],
+        "submitted_by_user_id": doc["submitted_by_user_id"],
+    }
+    return json.dumps(core, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _bundle_hash(doc: dict) -> str:
+    return hashlib.sha256(_canonical_bundle(doc).encode()).hexdigest()
+
+
+@router.post("/edge-clients/submit")
+async def submit_edge_bundle(payload: EdgeClientBundleRequest, user=Depends(auth.get_current_user)):
+    if payload.client_id not in UNVERIFIED_CLIENTS:
+        raise HTTPException(422, "submit accepts only unverified client models: EC-01 (Copilot), EC-02 (Droid)")
+    client = await db.edge_clients.find_one({"id": payload.client_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(404, "unknown edge client")
+    project = await db.projects.find_one({"id": payload.project_id}, {"_id": 0})
+    if not project:
+        raise HTTPException(404, "project not found")
+    await auth.require_project_role(user, payload.project_id, payload.role)
+
+    key = await get_project_key(db, payload.project_id)
+    masked_output, detections = mask_sensitive_text(payload.output_text, key)
+
+    doc = {
+        "id": str(uuid4()),
+        "client_id": client["id"], "client_name": client["name"],
+        "project_id": payload.project_id,
+        "prompt_hash": payload.prompt_hash,          # stored; prompt text is never stored
+        "tool_calls": payload.tool_calls,
+        "input_hashes": payload.input_hashes,
+        "output_text": masked_output,                # stored only after masking
+        "role": payload.role,
+        "submitted_by_user_id": user["id"],
+        "submitted_by_user_name": user["name"],
+        "trust_class": "Client-generated, unverified",
+        "may_set_verdict": False,
+        "provenance": "client_model_unverified",
+        "masked_values": len(detections),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    bundle_hash = _bundle_hash(doc)
+    signature = _edge_sign(user["id"], bundle_hash)
+    doc["bundle_hash"] = bundle_hash
+    doc["signature"] = signature
+
+    await db.edge_bundles.insert_one(dict(doc))
+    entry = await ledger_mod.append_to_ledger(
+        db, "edge_bundle", doc["id"],
+        {"client_id": doc["client_id"], "project_id": doc["project_id"],
+         "bundle_hash": bundle_hash, "signature": signature, "user_id": user["id"]})
+    doc.pop("_id", None)
+    return {"bundle": doc, "ledger_seq": entry["seq"]}
+
+
+@router.get("/edge-clients/bundles")
+async def list_edge_bundles(project_id: str = None):
+    q = {"project_id": project_id} if project_id else {}
+    return await db.edge_bundles.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+
+@router.get("/edge-clients/bundles/{bundle_id}/verify")
+async def verify_edge_bundle(bundle_id: str):
+    doc = await db.edge_bundles.find_one({"id": bundle_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "bundle not found")
+    recomputed = _bundle_hash(doc)
+    hash_ok = recomputed == doc.get("bundle_hash")
+    expected_sig = _edge_sign(doc["submitted_by_user_id"], recomputed)
+    sig_ok = hmac.compare_digest(expected_sig, doc.get("signature", ""))
+    valid = hash_ok and sig_ok
+    return {
+        "bundle_id": bundle_id,
+        "valid": valid,
+        "status": "valid" if valid else "tampered",
+        "stored_hash": doc.get("bundle_hash"),
+        "recomputed_hash": recomputed,
+        "hash_match": hash_ok,
+        "signature_valid": sig_ok,
+    }
+
 
 
 @router.post("/repo-audit/ingest")
