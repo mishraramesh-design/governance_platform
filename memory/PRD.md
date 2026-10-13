@@ -167,7 +167,15 @@ LLM via Emergent universal key. User explicitly wants an ENTERPRISE build, not a
 - Frontend: `AuthContext` (token in sessionStorage), Bearer axios interceptor, header user-switcher + acting-role switcher (scoped to assigned roles), Programme-Manager-gated `/admin` page.
 - FIXED P1 ledger hash-chain bug: root cause was a race in `append_to_ledger` (concurrent appends forked the chain → 222 duplicate seqs). Added an `asyncio.Lock` to serialize appends + `rebuild_chain()` repair (admin `POST /api/ledger/rebuild`). `GET /api/ledger/verify` now valid=true and stays valid after writes.
 
+## 2026-06 — Edge-Client Signed Bundles (DONE, tested: backend curl + frontend 6/6)
+- `POST /api/edge-clients/submit` ({project_id, client_id EC-01/EC-02, prompt_hash, tool_calls[], input_hashes[], output_text, role}) requires a valid bearer token (401 without) + assigned project role (403 otherwise); rejects platform clients (422, only EC-01 Copilot / EC-02 Droid allowed).
+- Server masks secrets/PII in output_text via `detectors.mask_sensitive_text` (raw never stored); stores prompt_hash only (never prompt text). Computes `bundle_hash` = SHA-256 over canonical JSON; HMAC-signs with a per-user key derived from `EDGE_SIGNING_SECRET` (env, never returned). Labels every bundle trust_class "Client-generated, unverified", may_set_verdict=false, provenance "client_model_unverified" — can never set a verdict. bundle_hash+signature anchored in the ledger.
+- `GET /api/edge-clients/bundles` (list) and `GET /api/edge-clients/bundles/{id}/verify` (recomputes hash+signature → valid/tampered). Verified: one-char DB mutation of a stored bundle → status "tampered".
+- Frontend `EdgeClients.jsx`: "Submit Signed Client Bundle" panel (sign-in + assigned role required) + "Signed Bundles" list with per-row "Verify" button showing Verified/Tampered badge + provenance chip.
+- New env key: `EDGE_SIGNING_SECRET` in backend/.env. New collection: `edge_bundles`.
+
 ### P1/P2 backlog remaining
+- P0 (carried over, not yet done): DB-driven routing matrix frontend — `GET /api/routing` backend ready; `RoleContext.jsx` still has hardcoded ROLES/ROUTING_MATRIX; read-only `Routing.jsx` page + nav link pending.
 - P1: Deep-dive stages — real detectors/controls for Requirements, Security & Privacy, Traceability, Release Readiness; replace NOT_ASSESSED stubs.
 - P1: Route engine.apply_level2 & report narratives through `complete_agent` per two-level pairing.
 - P2: Learning Harness UI signals/loops/metrics, routing-matrix page, Repo onboarding/Stack Profiler (A21), dynamic Edge Clients & Repo Audit bindings, multi-model expansion.
