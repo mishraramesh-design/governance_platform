@@ -1,6 +1,7 @@
-# Production stack: pulls prebuilt images from Docker Hub (built by .github/workflows/docker-publish.yml).
-#   cp .env.example .env   # fill in values
-#   docker compose pull && docker compose up -d
+# Single-file deployment. No .env file needed.
+# 1) Change the three values marked  <-- CHANGE ME  (and add model keys if you want LLM features)
+# 2) docker compose pull && docker compose up -d
+# 3) Open http://<server-ip>:5021  and sign in with BOOTSTRAP_ADMIN_TOKEN
 services:
   mongo:
     image: mongo:7
@@ -14,31 +15,33 @@ services:
       retries: 5
 
   backend:
-    image: ${IMAGE_REPO:-mishramesh/governance}:backend-${IMAGE_TAG:-latest}
+    image: mishramesh/governance:backend-latest      # <-- CHANGE ME if your Docker Hub username differs
     restart: unless-stopped
     depends_on:
       mongo:
         condition: service_healthy
     environment:
       MONGO_URL: mongodb://mongo:27017
-      DB_NAME: ${DB_NAME:-governance}
-      DEMO_MODE: ${DEMO_MODE:-false}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5021}
-      BOOTSTRAP_ADMIN_TOKEN: ${BOOTSTRAP_ADMIN_TOKEN:-}
-      EDGE_SIGNING_SECRET: ${EDGE_SIGNING_SECRET:?set EDGE_SIGNING_SECRET in .env}
-      MASKING_KEY: ${MASKING_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      DB_NAME: governance
+      DEMO_MODE: "false"
+      # The browser talks to the frontend container only (same origin), so CORS needs no change.
+      CORS_ORIGINS: "http://localhost:5021"
+      BOOTSTRAP_ADMIN_TOKEN: "change-this-to-a-long-random-admin-token"   # <-- CHANGE ME (first admin sign-in token)
+      EDGE_SIGNING_SECRET: "change-this-to-a-long-random-secret"           # <-- CHANGE ME
+      MASKING_KEY: ""
+      # Optional: add provider keys to enable LLM features (leave empty for deterministic-only)
+      OPENAI_API_KEY: ""
+      ANTHROPIC_API_KEY: ""
+      GEMINI_API_KEY: ""
     # not published: only the frontend container reaches it
 
   frontend:
-    image: ${IMAGE_REPO:-mishramesh/governance}:frontend-${IMAGE_TAG:-latest}
+    image: mishramesh/governance:frontend-latest     # <-- CHANGE ME if your Docker Hub username differs
     restart: unless-stopped
     depends_on:
       - backend
     ports:
-      - "${HTTP_PORT:-5021}:80"
+      - "5021:80"
 
 volumes:
   mongo_data:

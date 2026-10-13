@@ -6,11 +6,9 @@ Images are built by GitHub Actions (`.github/workflows/docker-publish.yml`) on e
 `<repo>:backend-latest` and `<repo>:frontend-latest` (also `-<sha>` and `-<version>` tags).
 Repository secrets required: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`. Optional repository variable `IMAGE_REPO` overrides the default `<username>/governance`.
 
-On the server:
+On the server: copy `docker-compose.yml` only (no `.env` needed), edit the values marked `CHANGE ME`, then:
 
 ```
-git clone <this repo> && cd governance_platform     # or copy docker-compose.yml and .env.example only
-cp .env.example .env                                 # set EDGE_SIGNING_SECRET, BOOTSTRAP_ADMIN_TOKEN, CORS_ORIGINS, IMAGE_REPO
 docker compose pull && docker compose up -d
 ```
 
