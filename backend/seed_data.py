@@ -15,14 +15,36 @@ import gateway
 # the DB stores just the SHA-256 hash (mirrors the real admin-issued token flow).
 # ---------------------------------------------------------------------------
 DEMO_USERS = [
-    {"id": "u-ramesh",  "name": "Ramesh Mishra",  "email": "mishraramesh@gmail.com", "roles": ["Programme Manager", "IV&V Lead"]},
-    {"id": "u-neha",    "name": "Neha Kulkarni",  "email": "neha.kulkarni@demo.gov",  "roles": ["IV&V Lead"]},
+    {"id": "u-ramesh",  "name": "Ramesh Mishra",  "email": "mishraramesh@gmail.com", "roles": ["Programme Manager"]},
+    {"id": "u-neha",    "name": "Neha Kulkarni",  "email": "neha.kulkarni@demo.gov",  "roles": ["Quality Lead"]},
     {"id": "u-asha",    "name": "Asha Verma",     "email": "asha.verma@demo.gov",     "roles": ["Developer"]},
     {"id": "u-rohit",   "name": "Rohit Nair",     "email": "rohit.nair@demo.gov",     "roles": ["Developer"]},
-    {"id": "u-priya",   "name": "Priya Shah",     "email": "priya.shah@demo.gov",     "roles": ["Security & Privacy Lead"]},
+    {"id": "u-priya",   "name": "Priya Shah",     "email": "priya.shah@demo.gov",     "roles": ["Tech Lead"]},
     {"id": "u-vikram",  "name": "Vikram Rao",     "email": "vikram.rao@demo.gov",     "roles": ["BA Lead", "Architect"]},
-    {"id": "u-sofia",   "name": "Sofia Dsouza",   "email": "sofia.dsouza@demo.gov",   "roles": ["Test Lead", "Quality / Process Owner"]},
-    {"id": "u-arjun",   "name": "Arjun Mehta",    "email": "arjun.mehta@demo.gov",    "roles": ["Release Manager", "Business Owner"]},
+    {"id": "u-sofia",   "name": "Sofia Dsouza",   "email": "sofia.dsouza@demo.gov",   "roles": ["Quality Lead", "Project Manager"]},
+    {"id": "u-arjun",   "name": "Arjun Mehta",    "email": "arjun.mehta@demo.gov",    "roles": ["Project Manager"]},
+]
+
+# Role schema version — bump to force a one-time remap of standing role assignments.
+ROLE_SCHEMA_VERSION = 2
+
+# Routing matrix (D decides, R receives, I informed, U urgent). Security/DPO is a
+# placeholder role with routing entries but no demo user assigned to it.
+ROUTING_MATRIX = [
+    {"key": "requirement_quality", "label": "Requirement quality",
+     "decides": ["BA Lead"], "receives": ["Developer"], "informed": ["Tech Lead"], "urgent": []},
+    {"key": "hardcoded_secret", "label": "Hardcoded secret",
+     "decides": ["Tech Lead"], "receives": ["Developer"], "informed": ["Quality Lead"], "urgent": ["Security/DPO"]},
+    {"key": "pii_in_code_or_logs", "label": "PII in code or logs",
+     "decides": ["Tech Lead"], "receives": ["Architect"], "informed": ["Programme Manager"], "urgent": ["Security/DPO"]},
+    {"key": "untraced_test", "label": "Untraced test",
+     "decides": ["Quality Lead"], "receives": [], "informed": [], "urgent": []},
+    {"key": "design_architecture_gap", "label": "Design / architecture gap",
+     "decides": ["Architect"], "receives": ["Tech Lead"], "informed": [], "urgent": []},
+    {"key": "schedule_release_readiness", "label": "Schedule or release readiness",
+     "decides": ["Project Manager"], "receives": ["Quality Lead"], "informed": ["Programme Manager"], "urgent": []},
+    {"key": "gate_summary", "label": "Gate summary",
+     "decides": ["Quality Lead"], "receives": ["Programme Manager"], "informed": [], "urgent": []},
 ]
 
 
@@ -32,6 +54,13 @@ def demo_token_for(user_id: str) -> str:
 
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+async def ensure_routing_seeded(db):
+    """Idempotently (re)seed the routing_matrix collection from ROUTING_MATRIX."""
+    await db.routing_matrix.delete_many({})
+    await db.routing_matrix.insert_many([
+        {"id": r["key"], "order": i, **r} for i, r in enumerate(ROUTING_MATRIX)])
 
 
 async def ensure_users_seeded(db):
@@ -48,15 +77,30 @@ async def ensure_users_seeded(db):
              "user_id": u["id"], "created_by": "seed", "revoked": False, "created_at": now}
             for u in DEMO_USERS])
 
-    # (Re)ensure every demo user has their standing roles on every known project.
     projects = await db.projects.find({}, {"_id": 0, "id": 1}).to_list(1000)
-    for u in DEMO_USERS:
-        for p in projects:
-            if await db.role_assignments.find_one({"user_id": u["id"], "project_id": p["id"]}):
-                continue
-            await db.role_assignments.insert_one({
-                "id": str(uuid4()), "user_id": u["id"], "project_id": p["id"],
-                "roles": list(u["roles"]), "created_at": now})
+
+    # One-time role-schema migration: wipe and reseed standing role assignments so the
+    # new canonical role set replaces any legacy role names.
+    meta = await db.app_meta.find_one({"key": "role_schema"}, {"_id": 0})
+    if not meta or meta.get("version") != ROLE_SCHEMA_VERSION:
+        await db.role_assignments.delete_many({})
+        for u in DEMO_USERS:
+            for p in projects:
+                await db.role_assignments.insert_one({
+                    "id": str(uuid4()), "user_id": u["id"], "project_id": p["id"],
+                    "roles": list(u["roles"]), "created_at": now})
+        await db.app_meta.update_one({"key": "role_schema"},
+                                     {"$set": {"key": "role_schema", "version": ROLE_SCHEMA_VERSION}},
+                                     upsert=True)
+    else:
+        # Ensure any newly added project gets each user's standing roles.
+        for u in DEMO_USERS:
+            for p in projects:
+                if await db.role_assignments.find_one({"user_id": u["id"], "project_id": p["id"]}):
+                    continue
+                await db.role_assignments.insert_one({
+                    "id": str(uuid4()), "user_id": u["id"], "project_id": p["id"],
+                    "roles": list(u["roles"]), "created_at": now})
 
     # Map seeded commit authors to user ids so segregation can identify the author.
     name_to_uid = {u["name"]: u["id"] for u in DEMO_USERS}

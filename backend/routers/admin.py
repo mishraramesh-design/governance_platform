@@ -14,9 +14,8 @@ import auth
 router = APIRouter(prefix="/admin")
 
 ALL_ROLES = [
-    "Programme Manager", "IV&V Lead", "Developer", "BA Lead", "Architect",
-    "Security & Privacy Lead", "Test Lead", "Release Manager", "Business Owner",
-    "Quality / Process Owner",
+    "Developer", "BA Lead", "Tech Lead", "Quality Lead", "Project Manager",
+    "Architect", "Programme Manager", "Security/DPO",
 ]
 
 

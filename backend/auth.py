@@ -18,7 +18,7 @@ from database import db
 bearer_scheme = HTTPBearer(auto_error=False)
 
 # Roles that may perform platform-wide (non project-scoped) governance actions.
-GOVERNANCE_ROLES = {"Programme Manager", "IV&V Lead"}
+GOVERNANCE_ROLES = {"Programme Manager", "Quality Lead"}
 ADMIN_ROLE = "Programme Manager"
 
 
