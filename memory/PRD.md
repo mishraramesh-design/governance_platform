@@ -157,4 +157,17 @@ LLM via Emergent universal key. User explicitly wants an ENTERPRISE build, not a
 
 ## Notes
 - Emergent universal key in backend/.env as EMERGENT_LLM_KEY. User's OpenAI key retained as fallback.
-- No auth in prototype (role switcher is demo-only). test_credentials.md: n/a.
+- Custom opaque Bearer-token auth added (no external IdP). See test_credentials.md for demo users/tokens.
+
+## 2026-06 — Auth, RBAC, Segregation of Duties & Ledger Fix (DONE, tested 15/15)
+- Custom opaque Bearer-token auth (SHA-256 hashed in DB); no external IdP. `backend/auth.py`.
+- 8 demo users seeded (`seed_data.ensure_users_seeded`), admin/owner = mishraramesh@gmail.com (u-ramesh, Programme Manager). Per-project `role_assignments` + deterministic `api_tokens` (`gov-demo-<id>-token-2026`). Commit `author_user_id` backfilled.
+- Routers mounted in server.py: `routers/auth.py` (/auth/users, /auth/demo-login, /auth/me), `routers/admin.py` (/admin/users, /admin/assignments, /admin/tokens[+revoke]).
+- Write endpoints (events/triage/adjudicate, repo-audit ingest, edge simulate) require a valid token; project-scoped role enforced; segregation of duties blocks authors from triaging their own findings.
+- Frontend: `AuthContext` (token in sessionStorage), Bearer axios interceptor, header user-switcher + acting-role switcher (scoped to assigned roles), Programme-Manager-gated `/admin` page.
+- FIXED P1 ledger hash-chain bug: root cause was a race in `append_to_ledger` (concurrent appends forked the chain → 222 duplicate seqs). Added an `asyncio.Lock` to serialize appends + `rebuild_chain()` repair (admin `POST /api/ledger/rebuild`). `GET /api/ledger/verify` now valid=true and stays valid after writes.
+
+### P1/P2 backlog remaining
+- P1: Deep-dive stages — real detectors/controls for Requirements, Security & Privacy, Traceability, Release Readiness; replace NOT_ASSESSED stubs.
+- P1: Route engine.apply_level2 & report narratives through `complete_agent` per two-level pairing.
+- P2: Learning Harness UI signals/loops/metrics, routing-matrix page, Repo onboarding/Stack Profiler (A21), dynamic Edge Clients & Repo Audit bindings, multi-model expansion.
