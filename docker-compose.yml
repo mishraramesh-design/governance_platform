@@ -23,7 +23,7 @@ services:
       MONGO_URL: mongodb://mongo:27017
       DB_NAME: ${DB_NAME:-governance}
       DEMO_MODE: ${DEMO_MODE:-false}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5021}
       BOOTSTRAP_ADMIN_TOKEN: ${BOOTSTRAP_ADMIN_TOKEN:-}
       EDGE_SIGNING_SECRET: ${EDGE_SIGNING_SECRET:?set EDGE_SIGNING_SECRET in .env}
       MASKING_KEY: ${MASKING_KEY:-}
@@ -38,7 +38,7 @@ services:
     depends_on:
       - backend
     ports:
-      - "${HTTP_PORT:-80}:80"
+      - "${HTTP_PORT:-5021}:80"
 
 volumes:
   mongo_data:
