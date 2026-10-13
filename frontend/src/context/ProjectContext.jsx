@@ -16,8 +16,12 @@ export function ProjectProvider({ children }) {
     if (!ready || !(demoMode || isAuthenticated)) { setProjects([]); return; }
     api.get("/projects").then((res) => {
       setProjects(res.data);
-      if (!projectId && res.data.length) {
+      // The remembered project may not exist on this server (new database, redeploy): fall back to the first one.
+      if (res.data.length && !res.data.some((p) => p.id === projectId)) {
         setProjectId(res.data[0].id);
+      } else if (!res.data.length) {
+        setProjectId("");
+        try { localStorage.removeItem("gov_project_id"); } catch (e) { /* ignore */ }
       }
     }).catch(() => setProjects([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
