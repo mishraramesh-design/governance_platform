@@ -130,6 +130,17 @@ export function AppShell({ children }) {
               >
                 Admin · Users & Tokens
               </Link>
+              <Link
+                to="/admin/people"
+                data-testid="nav-people"
+                className={`block px-5 py-2 text-sm font-medium transition-colors duration-100 ease-in border-l-4 ${
+                  location.pathname === "/admin/people"
+                    ? "border-[#FFE600] bg-gray-50 text-black font-bold"
+                    : "border-transparent text-gray-600 hover:bg-gray-50 hover:text-black"
+                }`}
+              >
+                People & Teams
+              </Link>
             </div>
           )}
         </nav>

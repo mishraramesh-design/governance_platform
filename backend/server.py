@@ -8,7 +8,7 @@ from database import db
 import auth as auth_mod
 import seed_data
 from routers import catalog, projects, events, reports, assurance, dashboard, harness, mlops
-from routers import auth as auth_routes, admin as admin_routes, routing as routing_routes
+from routers import auth as auth_routes, admin as admin_routes, routing as routing_routes, people as people_routes
 
 app = FastAPI(title="SDLC Governance & Assurance Platform")
 api_router = APIRouter(prefix="/api")
@@ -29,6 +29,7 @@ api_router.include_router(harness.router, dependencies=[Depends(auth_mod.require
 api_router.include_router(mlops.router, dependencies=[Depends(auth_mod.require_read_access)])
 api_router.include_router(auth_routes.router)
 api_router.include_router(admin_routes.router)
+api_router.include_router(people_routes.router)
 api_router.include_router(routing_routes.router, dependencies=[Depends(auth_mod.require_read_access)])
 
 app.include_router(api_router)

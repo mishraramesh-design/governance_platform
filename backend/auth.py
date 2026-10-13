@@ -135,6 +135,11 @@ async def finding_author_user_id(finding: dict):
         if commit:
             if commit.get("author_user_id"):
                 return commit["author_user_id"]
+            for key in (commit.get("author"), commit.get("author_email")):
+                if key:
+                    a = await db.author_aliases.find_one({"alias_lc": key.strip().lower()}, {"_id": 0})
+                    if a:
+                        return a["user_id"]
             if commit.get("author"):
                 u = await db.users.find_one({"name": commit["author"]}, {"_id": 0})
                 if u:
@@ -153,8 +158,12 @@ async def enforce_segregation(user: dict, finding: dict):
 
 async def ensure_project_assignments(project_id: str):
     """Give every demo user their standing role set on a newly created project so the
-    project is immediately usable for triage/adjudication."""
+    project is immediately usable for triage/adjudication.
+    Outside DEMO_MODE only Programme Managers receive standing access; everyone else is assigned
+    by an admin (least privilege across client projects)."""
     async for u in db.users.find({}, {"_id": 0}):
+        if not demo_mode() and ADMIN_ROLE not in await all_roles(u["id"]):
+            continue
         if await db.role_assignments.find_one({"user_id": u["id"], "project_id": project_id}):
             continue
         roles = sorted(await all_roles(u["id"]))

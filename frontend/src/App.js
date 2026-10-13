@@ -28,6 +28,7 @@ import RepoAudit from "@/pages/RepoAudit";
 import Runtime from "@/pages/Runtime";
 import About from "@/pages/About";
 import Admin from "@/pages/Admin";
+import People from "@/pages/People";
 
 function App() {
   return (
@@ -59,6 +60,7 @@ function App() {
               <Route path="/runtime" element={<Runtime />} />
               <Route path="/about" element={<About />} />
               <Route path="/admin" element={<Admin />} />
+              <Route path="/admin/people" element={<People />} />
             </Routes>
           </AppShell>
         </BrowserRouter>
