@@ -42,7 +42,7 @@ jobs:
           flavor: |
             latest=false
           tags: |
-            type=raw,value=${{ matrix.component }}-latest,enable={{is_default_branch}}
+            type=raw,value=${{ matrix.component }}-latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/claude/pilot-readiness' }}
             type=sha,prefix=${{ matrix.component }}-,format=short
             type=semver,pattern={{version}},prefix=${{ matrix.component }}-
       - uses: docker/build-push-action@v6
