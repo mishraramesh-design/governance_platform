@@ -1,7 +1,7 @@
 import "@/App.css";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
-import { RoleProvider } from "@/context/RoleContext";
+import { AuthProvider } from "@/context/AuthContext";
 import { ProjectProvider } from "@/context/ProjectContext";
 import { AppShell } from "@/components/AppShell";
 
@@ -27,10 +27,11 @@ import EdgeClients from "@/pages/EdgeClients";
 import RepoAudit from "@/pages/RepoAudit";
 import Runtime from "@/pages/Runtime";
 import About from "@/pages/About";
+import Admin from "@/pages/Admin";
 
 function App() {
   return (
-    <RoleProvider>
+    <AuthProvider>
       <ProjectProvider>
         <BrowserRouter>
           <AppShell>
@@ -57,12 +58,13 @@ function App() {
               <Route path="/repo-audit" element={<RepoAudit />} />
               <Route path="/runtime" element={<Runtime />} />
               <Route path="/about" element={<About />} />
+              <Route path="/admin" element={<Admin />} />
             </Routes>
           </AppShell>
         </BrowserRouter>
         <Toaster />
       </ProjectProvider>
-    </RoleProvider>
+    </AuthProvider>
   );
 }
 

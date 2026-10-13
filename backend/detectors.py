@@ -4,8 +4,46 @@ import os
 import re
 import hmac
 import hashlib
+import secrets as _secrets
+from datetime import datetime, timezone
 
-MASK_KEY = os.environ.get("MASKING_KEY", "ivv-governance-platform-mask-key-2026").encode()
+# No hardcoded masking key is shipped. Hashes are keyed PER PROJECT via get_project_key().
+# Keyless callers (evaluator, ad-hoc scans) fall back to a process-ephemeral random key so a
+# raw value is never hashed with a constant that ships in source control.
+_FALLBACK_KEY = None
+
+
+def _resolve_key(key):
+    global _FALLBACK_KEY
+    if key is not None:
+        return key if isinstance(key, (bytes, bytearray)) else str(key).encode()
+    env = os.environ.get("MASKING_KEY")
+    if env:
+        return env.encode()
+    if _FALLBACK_KEY is None:
+        _FALLBACK_KEY = _secrets.token_bytes(32)
+    return _FALLBACK_KEY
+
+
+async def get_project_key(db, project_id: str) -> bytes:
+    """Return the per-project masking key, creating & persisting a random one on first use.
+    Stored in the `project_keys` collection; never returned by any API."""
+    row = await db.project_keys.find_one({"project_id": project_id}, {"_id": 0})
+    if row and row.get("key"):
+        return bytes.fromhex(row["key"])
+    env = os.environ.get("MASKING_KEY")
+    if env:
+        key = hmac.new(env.encode(), project_id.encode(), hashlib.sha256).digest()
+    else:
+        key = _secrets.token_bytes(32)
+    await db.project_keys.update_one(
+        {"project_id": project_id},
+        {"$setOnInsert": {"project_id": project_id, "key": key.hex(),
+                          "created_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    row = await db.project_keys.find_one({"project_id": project_id}, {"_id": 0})
+    return bytes.fromhex(row["key"])
 
 SECRET_PATTERNS = [
     ("aws_access_key", re.compile(r"AKIA[0-9A-Z]{16}")),
@@ -133,6 +171,13 @@ def _line_of(text: str, start: int, end: int) -> str:
     return text[ls:(le if le != -1 else len(text))]
 
 
+def _pos(text: str, start: int):
+    """1-based (line, column) of the match start. No raw source line is retained."""
+    line = text.count("\n", 0, start) + 1
+    col = start - (text.rfind("\n", 0, start) + 1) + 1
+    return line, col
+
+
 def mask_value(value: str) -> str:
     v = (value or "").strip()
     if len(v) <= 4:
@@ -140,15 +185,16 @@ def mask_value(value: str) -> str:
     return f"{v[:2]}{'*' * (len(v) - 4)}{v[-2:]}"
 
 
-def keyed_hash(value: str) -> str:
-    return hmac.new(MASK_KEY, (value or "").encode(), hashlib.sha256).hexdigest()[:16]
+def keyed_hash(value: str, key=None) -> str:
+    return hmac.new(_resolve_key(key), (value or "").encode(), hashlib.sha256).hexdigest()[:16]
 
 
-def scan_secrets(text: str):
+def scan_secrets(text: str, key=None):
+    text = text or ""
     findings = []
     seen = set()
     for label, pattern in SECRET_PATTERNS:
-        for m in pattern.finditer(text or ""):
+        for m in pattern.finditer(text):
             if label == "sensitive_assignment_unquoted":
                 val = _unquoted_secret_value(m.group("val"))
                 if not val:
@@ -159,11 +205,14 @@ def scan_secrets(text: str):
             if raw in seen:
                 continue
             seen.add(raw)
-            findings.append({"type": f"secret:{label}", "masked": mask_value(raw), "hash": keyed_hash(raw), "severity": "critical"})
+            line, col = _pos(text, m.start())
+            findings.append({"type": f"secret:{label}", "masked": mask_value(raw),
+                             "hash": keyed_hash(raw, key), "severity": "critical",
+                             "line": line, "col": col})
     return findings
 
 
-def scan_pii(text: str):
+def scan_pii(text: str, key=None):
     findings = []
     seen = set()
     text = text or ""
@@ -183,17 +232,21 @@ def scan_pii(text: str):
                 continue
             seen.add(raw)
             sev = "high" if label in ("aadhaar", "pan", "card_number", "gstin") else "medium"
-            findings.append({"type": f"pii:{label}", "masked": mask_value(raw), "hash": keyed_hash(raw), "severity": sev})
+            ln, col = _pos(text, m.start())
+            findings.append({"type": f"pii:{label}", "masked": mask_value(raw),
+                             "hash": keyed_hash(raw, key), "severity": sev,
+                             "line": ln, "col": col})
     return findings
 
 
-def scan_logging_leak(text: str):
+def scan_logging_leak(text: str, key=None):
+    text = text or ""
     findings = []
-    for m in LOG_CALL_PATTERN.finditer(text or ""):
+    for m in LOG_CALL_PATTERN.finditer(text):
         args = m.group("args")
         # A sensitive keyword only inside a plain string literal with NO variable is not a leak.
         has_keyword = bool(LOG_SENSITIVE_RE.search(args))
-        has_detected_value = bool(scan_secrets(args)) or bool(scan_pii(args))
+        has_detected_value = bool(scan_secrets(args, key)) or bool(scan_pii(args, key))
         outside_strings = STRING_LITERAL_RE.sub("", args)
         has_variable = bool(re.search(r"[A-Za-z_][A-Za-z0-9_.]*", outside_strings))
         has_format = bool(FORMAT_PLACEHOLDER_RE.search(args))
@@ -201,7 +254,10 @@ def scan_logging_leak(text: str):
         if not is_leak:
             continue
         raw = m.group(0)
-        findings.append({"type": "logging_leak", "masked": mask_value(raw)[:48] + "...", "hash": keyed_hash(raw), "severity": "high"})
+        line, col = _pos(text, m.start())
+        findings.append({"type": "logging_leak", "masked": mask_value(raw)[:48] + "...",
+                         "hash": keyed_hash(raw, key), "severity": "high",
+                         "line": line, "col": col})
     return findings
 
 

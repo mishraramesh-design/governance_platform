@@ -2,12 +2,12 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import api from "../lib/api";
 import { useProject } from "../context/ProjectContext";
-import { useRole } from "../context/RoleContext";
+import { useAuth } from "../context/AuthContext";
 import { PageHeader } from "../components/PageHeader";
 
 export default function Adjudication() {
   const { projectId } = useProject();
-  const { role } = useRole();
+  const { role, isAuthenticated } = useAuth();
   const qc = useQueryClient();
 
   const { data: adjudications, isLoading } = useQuery({
@@ -23,12 +23,21 @@ export default function Adjudication() {
   const agentName = (id) => agentsData?.agents?.find((a) => a.id === id)?.name || id || "—";
 
   const decide = useMutation({
-    mutationFn: ({ id, human_decision }) => api.post(`/adjudications/${id}/decide`, { human_decision, decided_by_role: role }),
+    mutationFn: ({ id, human_decision }) => api.post(`/adjudications/${id}/decide`, { human_decision, role }),
     onSuccess: () => {
       toast.success("Adjudication decision recorded");
       qc.invalidateQueries({ queryKey: ["adjudications"] });
     },
+    onError: (err) => toast.error(err.response?.data?.detail || "Adjudication failed"),
   });
+
+  const runDecide = (id, human_decision) => {
+    if (!isAuthenticated) {
+      toast.error("Sign in as a user (top-right) to adjudicate.");
+      return;
+    }
+    decide.mutate({ id, human_decision });
+  };
 
   const pending = (adjudications || []).filter((a) => !a.human_decision);
   const resolved = (adjudications || []).filter((a) => a.human_decision);
@@ -57,9 +66,9 @@ export default function Adjudication() {
                 </div>
               </div>
               <div className="flex gap-2">
-                <button data-testid={`agree-l1-btn-${a.id}`} onClick={() => decide.mutate({ id: a.id, human_decision: "agree_l1" })} className="flex-1 border border-black text-xs font-bold uppercase py-2 hover:bg-black hover:text-[#FFE600] transition-colors duration-100">Agree with L1</button>
-                <button data-testid={`agree-l2-btn-${a.id}`} onClick={() => decide.mutate({ id: a.id, human_decision: "agree_l2" })} className="flex-1 border border-black text-xs font-bold uppercase py-2 hover:bg-black hover:text-[#FFE600] transition-colors duration-100">Agree with L2</button>
-                <button data-testid={`override-btn-${a.id}`} onClick={() => decide.mutate({ id: a.id, human_decision: "override" })} className="flex-1 border border-gray-400 text-xs font-bold uppercase py-2 hover:bg-gray-100 transition-colors duration-100">Human Override</button>
+                <button data-testid={`agree-l1-btn-${a.id}`} onClick={() => runDecide(a.id, "agree_l1")} className="flex-1 border border-black text-xs font-bold uppercase py-2 hover:bg-black hover:text-[#FFE600] transition-colors duration-100">Agree with L1</button>
+                <button data-testid={`agree-l2-btn-${a.id}`} onClick={() => runDecide(a.id, "agree_l2")} className="flex-1 border border-black text-xs font-bold uppercase py-2 hover:bg-black hover:text-[#FFE600] transition-colors duration-100">Agree with L2</button>
+                <button data-testid={`override-btn-${a.id}`} onClick={() => runDecide(a.id, "override")} className="flex-1 border border-gray-400 text-xs font-bold uppercase py-2 hover:bg-gray-100 transition-colors duration-100">Human Override</button>
               </div>
             </div>
           ))}

@@ -3,7 +3,7 @@ import re
 from uuid import uuid4
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Response, Depends
 
 from database import db
 from models import RepoAuditRequest, RuntimeAnalyzeRequest, EdgeClientSimulateRequest
@@ -12,6 +12,7 @@ import engine
 import repo_ingest
 import evidence_pack
 import ledger as ledger_mod
+import auth
 
 router = APIRouter()
 
@@ -26,6 +27,12 @@ async def verify_ledger():
     return await ledger_mod.verify_integrity(db)
 
 
+@router.post("/ledger/rebuild")
+async def rebuild_ledger(user=Depends(auth.get_current_user)):
+    await auth.require_any_global_role(user, {auth.ADMIN_ROLE})
+    return await ledger_mod.rebuild_chain(db)
+
+
 @router.get("/edge-clients")
 async def list_edge_clients():
     return await db.edge_clients.find({}, {"_id": 0}).to_list(100)
@@ -34,11 +41,20 @@ async def list_edge_clients():
 @router.get("/edge-clients/contributions")
 async def list_edge_contributions(project_id: str = None):
     q = {"project_id": project_id} if project_id else {}
-    return await db.edge_contributions.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    items = await db.edge_contributions.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    attributed = [c for c in items if c.get("status") != "unattributed"]
+    unattributed = [c for c in items if c.get("status") == "unattributed"]
+    return {
+        "contributions": items,
+        "attributed_count": len(attributed),
+        "unattributed_count": len(unattributed),
+        "counted_in_evidence": len(attributed),  # unattributed are excluded from evidence counts
+    }
 
 
 @router.post("/edge-clients/simulate")
-async def simulate_edge_client(payload: EdgeClientSimulateRequest):
+async def simulate_edge_client(payload: EdgeClientSimulateRequest,
+                               user=Depends(auth.get_optional_user)):
     client = await db.edge_clients.find_one({"id": payload.client_id}, {"_id": 0})
     if not client:
         raise HTTPException(404, "unknown edge client")
@@ -47,25 +63,50 @@ async def simulate_edge_client(payload: EdgeClientSimulateRequest):
         raise HTTPException(404, "project not found")
 
     if client["id"] in ("EC-01", "EC-02"):
+        # Unverified client path accepts anonymous input. A missing/revoked token is
+        # recorded as 'unattributed' and excluded from evidence counts/gates/reports.
+        if user and payload.role:
+            await auth.require_project_role(user, payload.project_id, payload.role)
+        status = "attributed" if user else "unattributed"
         contribution = {
-            "id": str(uuid4()), "client_id": client["id"], "client_name": client["name"], "project_id": payload.project_id,
-            "note": payload.note or "", "trust_class": "Client-generated, unverified", "may_set_verdict": False,
-            "provenance": "client_model_unverified", "created_at": datetime.now(timezone.utc).isoformat(),
+            "id": str(uuid4()), "client_id": client["id"], "client_name": client["name"],
+            "project_id": payload.project_id, "note": payload.note or "",
+            "trust_class": "Client-generated, unverified", "may_set_verdict": False,
+            "provenance": "client_model_unverified", "status": status,
+            "submitted_by_user_id": user["id"] if user else None,
+            "submitted_by_user_name": user["name"] if user else None,
+            "acting_role": payload.role if user else None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
         await db.edge_contributions.insert_one(dict(contribution))
-        await ledger_mod.append_to_ledger(db, "edge_contribution", contribution["id"], {"client_id": client["id"], "project_id": payload.project_id})
+        await ledger_mod.append_to_ledger(db, "edge_contribution", contribution["id"],
+                                          {"client_id": client["id"], "project_id": payload.project_id,
+                                           "status": status, "user_id": user["id"] if user else None})
         contribution.pop("_id", None)
         return {"mode": "unverified_contribution", "contribution": contribution}
 
+    # Platform-routed clients may set a verdict -> require a valid token + assigned role.
+    if not user:
+        raise HTTPException(401, "Valid bearer token required to route a platform event",
+                            headers={"WWW-Authenticate": "Bearer"})
+    if not payload.role:
+        raise HTTPException(422, "role is required to route a platform event")
+    await auth.require_project_role(user, payload.project_id, payload.role)
     event_type = payload.event_type or "commit_pushed"
-    result = await engine.run_event(db, payload.project_id, event_type, payload.source_ref, triggered_by=client["id"])
+    result = await engine.run_event(db, payload.project_id, event_type, payload.source_ref,
+                                    triggered_by=f"{client['id']}:{user['name']}")
     return {"mode": "platform_routed_event", "client": client, "result": result}
 
 
 @router.post("/repo-audit/ingest")
-async def ingest_repo_audit(payload: RepoAuditRequest):
+async def ingest_repo_audit(payload: RepoAuditRequest, user=Depends(auth.get_current_user)):
+    await auth.require_any_global_role(user, auth.GOVERNANCE_ROLES)
     try:
-        return await repo_ingest.ingest_repo(db, payload.github_url, payload.name, payload.git_token)
+        result = await repo_ingest.ingest_repo(db, payload.github_url, payload.name, payload.git_token)
+        pid = (result.get("project") or {}).get("id")
+        if pid:
+            await auth.ensure_project_assignments(pid)
+        return result
     except ValueError as e:
         raise HTTPException(400, str(e))
     except RuntimeError as e:

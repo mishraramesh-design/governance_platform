@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import gateway
 import agent_profiles
 import ledger as ledger_mod
-from detectors import scan_secrets, scan_pii, scan_logging_leak, static_code_issues, keyed_hash
+from detectors import scan_secrets, scan_pii, scan_logging_leak, static_code_issues, keyed_hash, get_project_key
 
 
 def _l2_for(agent_id):
@@ -115,6 +115,7 @@ def not_assessed_stub(project, event, control, subject_ref=None):
 
 async def handle_requirement_quality(db, project, event, source_ref):
     reqs = await db.requirements.find({"project_id": project["id"]}, {"_id": 0}).to_list(1000)
+    key = await get_project_key(db, project["id"])
     findings = []
     for r in reqs:
         score, issues = assess_requirement_quality(r["text"])
@@ -133,13 +134,14 @@ async def handle_requirement_quality(db, project, event, source_ref):
             reason="; ".join(issues) if issues else "No ambiguity or testability issues detected.",
             tags=["requirements", "quality"], suggested_remedy=remedy,
             subject_ref=r["req_id"], subject_type="requirement", method=method,
-            evidence=[{"type": "requirement_excerpt", "masked": r["text"][:160], "hash": keyed_hash(r["text"])}],
+            evidence=[{"type": "requirement_excerpt", "masked": r["text"][:160], "hash": keyed_hash(r["text"], key)}],
         ))
     return findings
 
 
 async def handle_acceptance_criteria(db, project, event, source_ref):
     reqs = await db.requirements.find({"project_id": project["id"]}, {"_id": 0}).to_list(1000)
+    key = await get_project_key(db, project["id"])
     findings = []
     for r in reqs:
         passed, reasons = assess_acceptance_criteria(r["text"])
@@ -150,7 +152,7 @@ async def handle_acceptance_criteria(db, project, event, source_ref):
             reason="Acceptance criteria present and measurable." if passed else "; ".join(reasons),
             tags=["requirements"], suggested_remedy="N/A" if passed else "Add Given/When/Then acceptance criteria with a measurable threshold.",
             subject_ref=r["req_id"], subject_type="requirement", method="rule-based",
-            evidence=[{"type": "requirement_excerpt", "masked": r["text"][:160], "hash": keyed_hash(r["text"])}],
+            evidence=[{"type": "requirement_excerpt", "masked": r["text"][:160], "hash": keyed_hash(r["text"], key)}],
         ))
     return findings
 
@@ -159,7 +161,12 @@ async def handle_secrets(db, project, event, source_ref):
     commit = await db.commits.find_one({"id": source_ref}, {"_id": 0}) if source_ref else None
     if not commit:
         return not_assessed_stub(project, event, {"id": "CTRL-06", "name": "Secrets Detection", "executor": "A05"}, source_ref)
-    hits = scan_secrets(commit.get("code_snippet", ""))
+    key = await get_project_key(db, project["id"])
+    snippet = commit.get("code_snippet", "")
+    cfile = commit.get("file") or f"{commit['commit_id']} (commit snippet)"
+    hits = scan_secrets(snippet, key)
+    for h in hits:
+        h["file"] = cfile
     if not hits:
         return [build_finding(project, event, "CTRL-06", "Secrets Detection", "A05", "low", 95, "PASS",
             "No hardcoded secrets detected in this commit.", ["security", "secrets"], "No action required.",
@@ -168,7 +175,7 @@ async def handle_secrets(db, project, event, source_ref):
         f"{len(hits)} potential secret(s) detected: {', '.join(sorted({h['type'] for h in hits}))}.",
         ["security", "secrets"], "Rotate the exposed credential(s) immediately and move to a secrets manager / environment variables.",
         commit["commit_id"], "commit", "deterministic_recompute", hits)
-    _apply_a05_rescan(f, "T0", scan_secrets(commit.get("code_snippet", "")), hits)
+    _apply_a05_rescan(f, "T0", scan_secrets(snippet, key), hits)
     return [f]
 
 
@@ -176,7 +183,12 @@ async def handle_pii(db, project, event, source_ref):
     commit = await db.commits.find_one({"id": source_ref}, {"_id": 0}) if source_ref else None
     if not commit:
         return not_assessed_stub(project, event, {"id": "CTRL-07", "name": "India PII Detection", "executor": "A05"}, source_ref)
-    hits = scan_pii(commit.get("code_snippet", ""))
+    key = await get_project_key(db, project["id"])
+    snippet = commit.get("code_snippet", "")
+    cfile = commit.get("file") or f"{commit['commit_id']} (commit snippet)"
+    hits = scan_pii(snippet, key)
+    for h in hits:
+        h["file"] = cfile
     if not hits:
         return [build_finding(project, event, "CTRL-07", "India PII Detection", "A05", "low", 92, "PASS",
             "No India-specific personal data patterns detected in this commit.", ["security", "privacy", "dpdp"],
@@ -188,7 +200,7 @@ async def handle_pii(db, project, event, source_ref):
         ["security", "privacy", "dpdp"] + DPDP_TAGS,
         "Remove hardcoded personal data; use masked test fixtures and verify DPDP Act obligations with your privacy officer.",
         commit["commit_id"], "commit", "deterministic_recompute", hits)
-    _apply_a05_rescan(f, tier, scan_pii(commit.get("code_snippet", "")), hits)
+    _apply_a05_rescan(f, tier, scan_pii(snippet, key), hits)
     return [f]
 
 
@@ -196,7 +208,12 @@ async def handle_logging_leak(db, project, event, source_ref):
     commit = await db.commits.find_one({"id": source_ref}, {"_id": 0}) if source_ref else None
     if not commit:
         return not_assessed_stub(project, event, {"id": "CTRL-08", "name": "Logging Leak Check", "executor": "A05"}, source_ref)
-    hits = scan_logging_leak(commit.get("code_snippet", ""))
+    key = await get_project_key(db, project["id"])
+    snippet = commit.get("code_snippet", "")
+    cfile = commit.get("file") or f"{commit['commit_id']} (commit snippet)"
+    hits = scan_logging_leak(snippet, key)
+    for h in hits:
+        h["file"] = cfile
     if not hits:
         return [build_finding(project, event, "CTRL-08", "Logging Leak Check", "A05", "low", 88, "PASS",
             "No sensitive values detected in log/print statements.", ["security", "logging"], "No action required.",
@@ -211,7 +228,10 @@ async def handle_static_code(db, project, event, source_ref):
     commit = await db.commits.find_one({"id": source_ref}, {"_id": 0}) if source_ref else None
     if not commit:
         return not_assessed_stub(project, event, {"id": "CTRL-10", "name": "Static Code Analysis", "executor": "A06"}, source_ref)
+    cfile = commit.get("file") or f"{commit['commit_id']} (commit snippet)"
     issues = static_code_issues(commit.get("code_snippet", ""))
+    for i in issues:
+        i["file"] = cfile
     if not issues:
         return [build_finding(project, event, "CTRL-10", "Static Code Analysis", "A06", "low", 80, "PASS",
             "No static-analysis heuristics triggered.", ["code_quality"], "No action required.",
@@ -290,7 +310,8 @@ async def handle_architecture_conformance(db, project, event, source_ref):
               f"All {len(critical)} critical/high requirements are covered by at least one design item.")
     if nfr_uncovered:
         reason += f" NFR allocation gap: {', '.join(nfr_uncovered)} not traced to a design item."
-    evidence = [{"type": "uncovered_requirement", "masked": rid, "hash": keyed_hash(rid)} for rid in uncovered_critical]
+    key = await get_project_key(db, project["id"])
+    evidence = [{"type": "uncovered_requirement", "masked": rid, "hash": keyed_hash(rid, key)} for rid in uncovered_critical]
     return [build_finding(project, event, "CTRL-04", "Architecture Conformance Review", "A04",
         severity="high" if verdict == "FAIL" else "low", confidence=88, verdict=verdict, reason=reason,
         tags=["design", "architecture", "nfr"],
@@ -311,7 +332,8 @@ async def handle_threat_model(db, project, event, source_ref):
     reason = (f"{len(unmodeled)} security-relevant requirement(s) are not addressed by any security/threat design "
               f"item (STRIDE gap): {', '.join(unmodeled)}." if unmodeled else
               f"All {len(sec_reqs)} security-relevant requirements are addressed by a security design item.")
-    evidence = [{"type": "unmodeled_security_requirement", "masked": rid, "hash": keyed_hash(rid)} for rid in unmodeled]
+    key = await get_project_key(db, project["id"])
+    evidence = [{"type": "unmodeled_security_requirement", "masked": rid, "hash": keyed_hash(rid, key)} for rid in unmodeled]
     f = build_finding(project, event, "CTRL-05", "Threat Model Review", "A05",
         severity="high" if verdict == "FAIL" else "low", confidence=85, verdict=verdict, reason=reason,
         tags=["design", "security", "privacy", "STRIDE"] + DPDP_TAGS,
@@ -335,6 +357,7 @@ async def _system_test_finding(db, project, event, control_id, name, agent, test
 async def handle_security_testing(db, project, event, source_ref):
     open_crit = await db.findings.find({"project_id": project["id"], "status": "open", "verdict": "FAIL",
         "control_id": {"$in": ["CTRL-06", "CTRL-07", "CTRL-08"]}, "severity": {"$in": ["high", "critical"]}}, {"_id": 0}).to_list(1000)
+    key = await get_project_key(db, project["id"])
 
     def ev(tests):
         failed = [t for t in tests if t.get("status") != "passed"]
@@ -342,18 +365,20 @@ async def handle_security_testing(db, project, event, source_ref):
         reason = (f"{len(failed)} DAST security test(s) failed; {len(open_crit)} open high/critical "
                   f"secret/PII/logging finding(s) still exposed." if bad else
                   f"All {len(tests)} DAST security tests passed and no open high/critical exposures remain.")
-        evid = [{"type": "failed_security_test", "masked": t["test_id"], "hash": keyed_hash(t["test_id"])} for t in failed]
+        evid = [{"type": "failed_security_test", "masked": t["test_id"], "hash": keyed_hash(t["test_id"], key)} for t in failed]
         return ("FAIL" if bad else "PASS", reason, evid, "critical" if bad else "low",
                 "Remediate failing DAST cases and close open high/critical security findings before release." if bad else "No action required.")
     return await _system_test_finding(db, project, event, "CTRL-15", "Security Testing (DAST)", "A05", "security", ev)
 
 
 async def handle_performance(db, project, event, source_ref):
+    key = await get_project_key(db, project["id"])
+
     def ev(tests):
         breaches = [t for t in tests if float(t.get("measured", 0)) > float(t.get("threshold", 1e12))]
         reason = ("; ".join(f"{t.get('metric')} {t.get('measured')}>{t.get('threshold')}" for t in breaches)
                   if breaches else f"All {len(tests)} performance thresholds met.")
-        evid = [{"type": "perf_breach", "masked": f"{t.get('metric')}={t.get('measured')}", "hash": keyed_hash(t["test_id"])} for t in breaches]
+        evid = [{"type": "perf_breach", "masked": f"{t.get('metric')}={t.get('measured')}", "hash": keyed_hash(t["test_id"], key)} for t in breaches]
         return ("FAIL" if breaches else "PASS", f"{len(breaches)} performance threshold breach(es): {reason}" if breaches else reason,
                 evid, "high" if breaches else "low",
                 "Optimise the breaching path or renegotiate the SLO before release." if breaches else "No action required.")
@@ -361,10 +386,12 @@ async def handle_performance(db, project, event, source_ref):
 
 
 async def handle_accessibility(db, project, event, source_ref):
+    key = await get_project_key(db, project["id"])
+
     def ev(tests):
         total = sum(int(t.get("wcag_violations", 0)) for t in tests)
         offenders = [t for t in tests if int(t.get("wcag_violations", 0)) > 0]
-        evid = [{"type": "wcag_violation", "masked": f"{t['test_id']}:{t.get('wcag_violations')}", "hash": keyed_hash(t["test_id"])} for t in offenders]
+        evid = [{"type": "wcag_violation", "masked": f"{t['test_id']}:{t.get('wcag_violations')}", "hash": keyed_hash(t["test_id"], key)} for t in offenders]
         return ("FAIL" if total else "PASS",
                 f"{total} WCAG 2.2 violation(s) across {len(offenders)} screen(s)." if total else f"No WCAG 2.2 violations across {len(tests)} checked screen(s).",
                 evid, "medium" if total else "low",
@@ -373,6 +400,8 @@ async def handle_accessibility(db, project, event, source_ref):
 
 
 async def handle_ai_eval(db, project, event, source_ref):
+    key = await get_project_key(db, project["id"])
+
     def ev(tests):
         fails = []
         for t in tests:
@@ -382,7 +411,7 @@ async def handle_ai_eval(db, project, event, source_ref):
                 fails.append(t)
         reason = ("; ".join(f"{t.get('metric')} {t.get('score')} vs {t.get('threshold')}" for t in fails)
                   if fails else f"All {len(tests)} AI evaluation metrics within tolerance.")
-        evid = [{"type": "ai_eval_breach", "masked": f"{t.get('metric')}={t.get('score')}", "hash": keyed_hash(t["test_id"])} for t in fails]
+        evid = [{"type": "ai_eval_breach", "masked": f"{t.get('metric')}={t.get('score')}", "hash": keyed_hash(t["test_id"], key)} for t in fails]
         return ("FAIL" if fails else "PASS", f"{len(fails)} AI evaluation metric(s) out of tolerance: {reason}" if fails else reason,
                 evid, "high" if fails else "low",
                 "Re-tune/guardrail the model and re-run the ISO/IEC 42001 evaluation suite before release." if fails else "No action required.")

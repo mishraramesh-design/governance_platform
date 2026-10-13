@@ -1,6 +1,8 @@
+import { useState, useEffect } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { useRole, ROLES } from "../context/RoleContext";
+import { useAuth } from "../context/AuthContext";
 import { useProject } from "../context/ProjectContext";
+import api from "../lib/api";
 import { AdvisoryBadge } from "./StatusPill";
 
 const NAV = [
@@ -63,9 +65,20 @@ function Logo() {
 }
 
 export function AppShell({ children }) {
-  const { role, setRole } = useRole();
+  const { user, allRoles, isAdmin, role, setRole, signInAs, signOut, isAuthenticated } = useAuth();
   const { projects, projectId, setProjectId, currentProject } = useProject();
   const location = useLocation();
+  const [users, setUsers] = useState([]);
+
+  useEffect(() => {
+    api.get("/auth/users").then((r) => setUsers(r.data)).catch(() => setUsers([]));
+  }, []);
+
+  const onSignInChange = (e) => {
+    const uid = e.target.value;
+    if (uid) signInAs(uid);
+    else signOut();
+  };
 
   return (
     <div className="min-h-screen bg-white flex">
@@ -98,6 +111,22 @@ export function AppShell({ children }) {
               })}
             </div>
           ))}
+          {isAdmin && (
+            <div className="mb-4">
+              <div className="px-5 mb-1 text-[10px] uppercase tracking-[0.2em] font-bold text-gray-400">Administration</div>
+              <Link
+                to="/admin"
+                data-testid="nav-admin"
+                className={`block px-5 py-2 text-sm font-medium transition-colors duration-100 ease-in border-l-4 ${
+                  location.pathname === "/admin"
+                    ? "border-[#FFE600] bg-gray-50 text-black font-bold"
+                    : "border-transparent text-gray-600 hover:bg-gray-50 hover:text-black"
+                }`}
+              >
+                Admin · Users & Tokens
+              </Link>
+            </div>
+          )}
         </nav>
       </aside>
 
@@ -128,20 +157,39 @@ export function AppShell({ children }) {
               ))}
             </select>
             <div className="flex items-center gap-2 border-l border-gray-200 pl-3">
-              <span className="text-[10px] uppercase tracking-wider text-gray-400 hidden sm:inline">Role</span>
+              <span className="text-[10px] uppercase tracking-wider text-gray-400 hidden sm:inline">Signed in</span>
               <select
-                data-testid="role-switcher"
-                value={role}
-                onChange={(e) => setRole(e.target.value)}
-                className="text-xs font-bold border border-black rounded-none px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-[#FFE600]"
+                data-testid="user-switcher"
+                value={user?.id || ""}
+                onChange={onSignInChange}
+                className="text-xs font-semibold border border-gray-300 rounded-none px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-[#FFE600]"
               >
-                {ROLES.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
+                <option value="">Signed out</option>
+                {users.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name}
                   </option>
                 ))}
               </select>
             </div>
+            {isAuthenticated && (
+              <div className="flex items-center gap-2 border-l border-gray-200 pl-3">
+                <span className="text-[10px] uppercase tracking-wider text-gray-400 hidden sm:inline">Acting role</span>
+                <select
+                  data-testid="role-switcher"
+                  value={role}
+                  onChange={(e) => setRole(e.target.value)}
+                  disabled={!allRoles.length}
+                  className="text-xs font-bold border border-black rounded-none px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-[#FFE600] disabled:opacity-40"
+                >
+                  {allRoles.map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
         </header>
         <main className="px-4 sm:px-8 py-6">{children}</main>

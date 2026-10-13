@@ -3,14 +3,15 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import api from "../lib/api";
 import { useProject } from "../context/ProjectContext";
-import { useRole, routingFor } from "../context/RoleContext";
+import { useAuth } from "../context/AuthContext";
+import { routingFor } from "../context/RoleContext";
 import { PageHeader } from "../components/PageHeader";
 import { VerdictPill, SeverityPill, ProvenancePill, RoutingPill } from "../components/StatusPill";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "../components/ui/sheet";
 
 export default function Findings() {
   const { projectId } = useProject();
-  const { role } = useRole();
+  const { role, isAuthenticated } = useAuth();
   const qc = useQueryClient();
   const [filters, setFilters] = useState({ severity: "", verdict: "" });
   const [selected, setSelected] = useState(null);
@@ -31,12 +32,32 @@ export default function Findings() {
   const agentName = (id) => agentsData?.agents?.find((a) => a.id === id)?.name || id || "—";
 
   const triage = useMutation({
-    mutationFn: ({ id, decision }) => api.post(`/findings/${id}/triage`, { decision, decided_by_role: role }),
+    mutationFn: ({ id, decision, reason }) => api.post(`/findings/${id}/triage`, { decision, role, reason: reason || "" }),
     onSuccess: () => {
       toast.success("Triage decision recorded");
       qc.invalidateQueries({ queryKey: ["findings"] });
+      setSelected(null);
+    },
+    onError: (err) => {
+      toast.error(err.response?.data?.detail || "Triage failed");
     },
   });
+
+  const runTriage = (id, decision) => {
+    if (!isAuthenticated) {
+      toast.error("Sign in as a user (top-right) to triage a finding.");
+      return;
+    }
+    let reason = "";
+    if (decision === "dismiss") {
+      reason = window.prompt("A reason is required to dismiss this finding:") || "";
+      if (!reason.trim()) {
+        toast.error("Dismiss cancelled — a reason is required.");
+        return;
+      }
+    }
+    triage.mutate({ id, decision, reason });
+  };
 
   const fetchLive = useMutation({
     mutationFn: ({ findingId, idx }) => api.post(`/findings/${findingId}/evidence/${idx}/fetch-live`),
@@ -139,9 +160,9 @@ export default function Findings() {
                 </div>
 
                 <div className="pt-3 border-t border-gray-200 flex gap-2">
-                  <button data-testid="triage-accept-btn" onClick={() => triage.mutate({ id: selected.id, decision: "accept" })} className="flex-1 border border-black text-xs font-bold uppercase py-2 hover:bg-black hover:text-[#FFE600] transition-colors duration-100">Accept</button>
-                  <button data-testid="triage-dismiss-btn" onClick={() => triage.mutate({ id: selected.id, decision: "dismiss" })} className="flex-1 border border-gray-400 text-xs font-bold uppercase py-2 hover:bg-gray-100 transition-colors duration-100">Dismiss</button>
-                  <button data-testid="triage-escalate-btn" onClick={() => triage.mutate({ id: selected.id, decision: "escalate" })} className="flex-1 border border-red-600 text-red-700 text-xs font-bold uppercase py-2 hover:bg-red-600 hover:text-white transition-colors duration-100">Escalate</button>
+                  <button data-testid="triage-accept-btn" onClick={() => runTriage(selected.id, "accept")} className="flex-1 border border-black text-xs font-bold uppercase py-2 hover:bg-black hover:text-[#FFE600] transition-colors duration-100">Accept</button>
+                  <button data-testid="triage-dismiss-btn" onClick={() => runTriage(selected.id, "dismiss")} className="flex-1 border border-gray-400 text-xs font-bold uppercase py-2 hover:bg-gray-100 transition-colors duration-100">Dismiss</button>
+                  <button data-testid="triage-escalate-btn" onClick={() => runTriage(selected.id, "escalate")} className="flex-1 border border-red-600 text-red-700 text-xs font-bold uppercase py-2 hover:bg-red-600 hover:text-white transition-colors duration-100">Escalate</button>
                 </div>
                 <div className="text-[10px] text-gray-400">Current status: {selected.status}</div>
               </div>

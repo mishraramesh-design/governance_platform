@@ -1,9 +1,69 @@
 """Static catalogs (agents, controls, AI-governance controls, edge clients) and seed/demo data generator."""
+import hashlib
 from uuid import uuid4
 from datetime import datetime, timezone
 
 import engine
 import gateway
+
+# ---------------------------------------------------------------------------
+# Demo users, standing project roles and deterministic opaque API tokens.
+# The admin/owner is mishraramesh@gmail.com (Programme Manager). Commit authors
+# Asha / Rohit / Priya are real users so segregation-of-duties can be exercised:
+# they cannot triage/adjudicate a finding raised on code they authored.
+# Plaintext tokens are deterministic ONLY for this prototype so QA/curl can sign in;
+# the DB stores just the SHA-256 hash (mirrors the real admin-issued token flow).
+# ---------------------------------------------------------------------------
+DEMO_USERS = [
+    {"id": "u-ramesh",  "name": "Ramesh Mishra",  "email": "mishraramesh@gmail.com", "roles": ["Programme Manager", "IV&V Lead"]},
+    {"id": "u-neha",    "name": "Neha Kulkarni",  "email": "neha.kulkarni@demo.gov",  "roles": ["IV&V Lead"]},
+    {"id": "u-asha",    "name": "Asha Verma",     "email": "asha.verma@demo.gov",     "roles": ["Developer"]},
+    {"id": "u-rohit",   "name": "Rohit Nair",     "email": "rohit.nair@demo.gov",     "roles": ["Developer"]},
+    {"id": "u-priya",   "name": "Priya Shah",     "email": "priya.shah@demo.gov",     "roles": ["Security & Privacy Lead"]},
+    {"id": "u-vikram",  "name": "Vikram Rao",     "email": "vikram.rao@demo.gov",     "roles": ["BA Lead", "Architect"]},
+    {"id": "u-sofia",   "name": "Sofia Dsouza",   "email": "sofia.dsouza@demo.gov",   "roles": ["Test Lead", "Quality / Process Owner"]},
+    {"id": "u-arjun",   "name": "Arjun Mehta",    "email": "arjun.mehta@demo.gov",    "roles": ["Release Manager", "Business Owner"]},
+]
+
+
+def demo_token_for(user_id: str) -> str:
+    return f"gov-demo-{user_id}-token-2026"
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+async def ensure_users_seeded(db):
+    """Idempotently seed users, per-project role assignments, deterministic tokens,
+    and backfill commit author_user_id for segregation-of-duties resolution."""
+    now = datetime.now(timezone.utc).isoformat()
+
+    if await db.users.count_documents({}) == 0:
+        await db.users.insert_many([
+            {"id": u["id"], "name": u["name"], "email": u["email"], "active": True, "created_at": now}
+            for u in DEMO_USERS])
+        await db.api_tokens.insert_many([
+            {"id": f"tok-{u['id']}", "token_hash": _hash_token(demo_token_for(u["id"])),
+             "user_id": u["id"], "created_by": "seed", "revoked": False, "created_at": now}
+            for u in DEMO_USERS])
+
+    # (Re)ensure every demo user has their standing roles on every known project.
+    projects = await db.projects.find({}, {"_id": 0, "id": 1}).to_list(1000)
+    for u in DEMO_USERS:
+        for p in projects:
+            if await db.role_assignments.find_one({"user_id": u["id"], "project_id": p["id"]}):
+                continue
+            await db.role_assignments.insert_one({
+                "id": str(uuid4()), "user_id": u["id"], "project_id": p["id"],
+                "roles": list(u["roles"]), "created_at": now})
+
+    # Map seeded commit authors to user ids so segregation can identify the author.
+    name_to_uid = {u["name"]: u["id"] for u in DEMO_USERS}
+    async for c in db.commits.find({"author_user_id": {"$exists": False}}, {"_id": 0, "id": 1, "author": 1}):
+        uid = name_to_uid.get(c.get("author"))
+        if uid:
+            await db.commits.update_one({"id": c["id"]}, {"$set": {"author_user_id": uid}})
 
 AGENTS = [
     {"id": "A01", "name": "IV&V Orchestrator", "level": "L1/L2", "sdlc_stage": "Cross-cutting",

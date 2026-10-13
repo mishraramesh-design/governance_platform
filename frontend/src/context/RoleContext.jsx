@@ -1,5 +1,3 @@
-import { createContext, useContext, useState, useEffect } from "react";
-
 export const ROLES = [
   "IV&V Lead",
   "Developer",
@@ -33,20 +31,4 @@ export function routingFor(tags = [], role) {
     if (m.inform.includes(role)) return "INFORM";
   }
   return null;
-}
-
-const RoleContext = createContext(null);
-
-export function RoleProvider({ children }) {
-  const [role, setRole] = useState(() => localStorage.getItem("gov_role") || "IV&V Lead");
-  useEffect(() => {
-    localStorage.setItem("gov_role", role);
-  }, [role]);
-  return <RoleContext.Provider value={{ role, setRole }}>{children}</RoleContext.Provider>;
-}
-
-export function useRole() {
-  const ctx = useContext(RoleContext);
-  if (!ctx) throw new Error("useRole must be used within RoleProvider");
-  return ctx;
 }

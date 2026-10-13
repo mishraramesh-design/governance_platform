@@ -1,12 +1,13 @@
 """Deterministic Harness API: agent personas, four-role capability model
 (maker/checker/security/verifier), on-prem/custom endpoints, Zero-LLM toggle,
 a live sandbox, the agent-flow graph and the llm_calls audit log."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 from database import db
 import gateway
 import agent_profiles
+import auth
 
 router = APIRouter(prefix="/harness")
 

@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 import engine
 import ledger as ledger_mod
-from detectors import scan_secrets, scan_pii, scan_logging_leak, static_code_issues
+from detectors import scan_secrets, scan_pii, scan_logging_leak, static_code_issues, get_project_key
 
 CODE_EXT = {".js", ".jsx", ".ts", ".tsx", ".py", ".java", ".go", ".rb", ".php", ".cs",
             ".yml", ".yaml", ".json", ".env", ".conf", ".sql", ".sh", ".html", ".css"}
@@ -39,7 +39,7 @@ def _auth_url(git_url: str, token: str = None) -> str:
     return git_url
 
 
-def _clone_and_scan(git_url: str, token: str = None) -> dict:
+def _clone_and_scan(git_url: str, token: str = None, key=None) -> dict:
     """Blocking: clone (shallow) + profile + scan. Run via asyncio.to_thread."""
     tmp = tempfile.mkdtemp(prefix="ivv_repo_")
     try:
@@ -119,7 +119,7 @@ def _clone_and_scan(git_url: str, token: str = None) -> dict:
                     frameworks.add("MongoDB")
                 if "postgres" in tl or "pg(" in tl:
                     frameworks.add("PostgreSQL")
-                sec, pii, log, stat = scan_secrets(text), scan_pii(text), scan_logging_leak(text), static_code_issues(text)
+                sec, pii, log, stat = scan_secrets(text, key), scan_pii(text, key), scan_logging_leak(text, key), static_code_issues(text)
                 if sec or pii or log or stat:
                     scanned.append({"path": rel, "secrets": sec, "pii": pii, "logging": log, "static": stat})
                 if file_count >= MAX_FILES:
@@ -156,30 +156,35 @@ async def ingest_repo(db, git_url: str, name: str = None, git_token: str = None)
     if not re.match(r"^https://github\.com/[\w.\-]+/[\w.\-]+/?$", git_url.strip()):
         raise ValueError("Please provide a valid public GitHub repository URL, e.g. https://github.com/org/repo")
 
-    scan = await asyncio.to_thread(_clone_and_scan, git_url.strip(), git_token)
+    git_url_c = git_url.strip()
+    # Resolve the project (re-audit reuses the same project) and its per-project masking key
+    # BEFORE scanning, so every evidence hash is keyed to this project.
+    existing = await db.projects.find_one({"repo_url": git_url_c, "source": "github_live"}, {"_id": 0})
+    pid = existing["id"] if existing else str(uuid4())
+    pkey = await get_project_key(db, pid)
+
+    scan = await asyncio.to_thread(_clone_and_scan, git_url_c, git_token, pkey)
     profile, scanned = scan["profile"], scan["scanned"]
 
-    repo_name = name or git_url.rstrip("/").split("/")[-1]
+    repo_name = name or git_url_c.rstrip("/").split("/")[-1]
     now = datetime.now(timezone.utc).isoformat()
 
     # Re-audit in place: reuse an existing project for the same repo URL.
-    existing = await db.projects.find_one({"repo_url": git_url.strip(), "source": "github_live"}, {"_id": 0})
     if existing:
         project = existing
-        pid = project["id"]
         for coll in ("findings", "events", "reports", "repo_audits"):
             await db[coll].delete_many({"project_id": pid})
         await db.projects.update_one({"id": pid}, {"$set": {"stage": "Repository Audit", "last_audited_at": now}})
-        await ledger_mod.append_to_ledger(db, "project_reaudit", pid, {"name": repo_name, "repo_url": git_url})
+        await ledger_mod.append_to_ledger(db, "project_reaudit", pid, {"name": repo_name, "repo_url": git_url_c})
     else:
         project = {
-            "id": str(uuid4()), "name": repo_name,
-            "description": f"Live IV&V audit of {git_url}",
-            "integrity_tier": "T2", "stage": "Repository Audit", "repo_url": git_url.strip(),
+            "id": pid, "name": repo_name,
+            "description": f"Live IV&V audit of {git_url_c}",
+            "integrity_tier": "T2", "stage": "Repository Audit", "repo_url": git_url_c,
             "source": "github_live", "created_at": now,
         }
         await db.projects.insert_one(dict(project))
-        await ledger_mod.append_to_ledger(db, "project", project["id"], {"name": repo_name, "repo_url": git_url})
+        await ledger_mod.append_to_ledger(db, "project", project["id"], {"name": repo_name, "repo_url": git_url_c})
 
     event = {
         "id": str(uuid4()), "project_id": project["id"], "event_type": "repo_audit",
@@ -191,8 +196,9 @@ async def ingest_repo(db, git_url: str, name: str = None, git_token: str = None)
 
     findings = []
 
-    def ev(hits, key):
-        return [{"type": h["type"], "masked": h["masked"], "hash": h["hash"]} for h in hits if (key is None or True)]
+    def ev(hits, rel):
+        return [{"type": h["type"], "masked": h["masked"], "hash": h["hash"],
+                 "file": rel, "line": h.get("line"), "col": h.get("col")} for h in hits]
 
     for item in scanned:
         rel = item["path"]
@@ -200,7 +206,7 @@ async def ingest_repo(db, git_url: str, name: str = None, git_token: str = None)
             f = engine.build_finding(project, event, "CTRL-06", "Secrets Detection", "A05", "critical", 97, "FAIL",
                 f"{len(item['secrets'])} potential secret(s) in {rel}: {', '.join(sorted({h['type'] for h in item['secrets']}))}.",
                 ["security", "secrets"], "Rotate the exposed credential(s) and move them to a secrets manager / environment variables.",
-                rel, "file", "deterministic_detector", ev(item["secrets"], None))
+                rel, "file", "deterministic_detector", ev(item["secrets"], rel))
             engine._apply_a05_rescan(f, "T0", item["secrets"], item["secrets"])
             findings.append(f)
         if item["pii"]:
@@ -208,14 +214,14 @@ async def ingest_repo(db, git_url: str, name: str = None, git_token: str = None)
             f = engine.build_finding(project, event, "CTRL-07", "India PII Detection", "A05", "high", 90, "FAIL",
                 f"{len(item['pii'])} potential personal-data pattern(s) in {rel}: {', '.join(sorted({h['type'] for h in item['pii']}))}. DPDP Act 2023 relevance flagged.",
                 ["security", "privacy", "dpdp"], "Remove hardcoded personal data; use masked fixtures and verify DPDP obligations.",
-                rel, "file", "deterministic_detector", ev(item["pii"], None))
+                rel, "file", "deterministic_detector", ev(item["pii"], rel))
             engine._apply_a05_rescan(f, tier, item["pii"], item["pii"])
             findings.append(f)
         if item["logging"]:
             f = engine.build_finding(project, event, "CTRL-08", "Sensitive Logging Leak", "A05", "high", 88, "FAIL",
                 f"{len(item['logging'])} log/print statement(s) in {rel} may emit sensitive values.",
                 ["security", "logging"], "Redact sensitive fields before logging; adopt structured logging with allow-lists.",
-                rel, "file", "deterministic_detector", ev(item["logging"], None))
+                rel, "file", "deterministic_detector", ev(item["logging"], rel))
             f["level2_status"] = "confirmed_by_recompute"
             findings.append(f)
         if item["static"]:
@@ -224,7 +230,7 @@ async def ingest_repo(db, git_url: str, name: str = None, git_token: str = None)
                 f"{len(item['static'])} code-quality issue(s) in {rel}: {', '.join(sorted({s['type'] for s in item['static']}))}.",
                 ["code_quality"], "Address the flagged issues (dynamic execution, swallowed errors, markers).",
                 rel, "file", "deterministic_detector",
-                [{"type": s["type"], "masked": s["type"], "hash": ""} for s in item["static"]])
+                [{"type": s["type"], "masked": s["type"], "hash": "", "file": rel, "line": s.get("line")} for s in item["static"]])
             f["level2_status"] = "confirmed_by_recompute"
             findings.append(f)
 
