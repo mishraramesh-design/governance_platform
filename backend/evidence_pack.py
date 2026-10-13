@@ -29,7 +29,7 @@ def build_docx(data) -> bytes:
     meta = d.add_paragraph()
     meta.add_run("Repository: ").bold = True
     meta.add_run(data["project"].get("repo_url", "—"))
-    d.add_paragraph(f"Integrity tier: {data['project'].get('integrity_tier')}    "
+    d.add_paragraph(f"Integrity level: {data['project'].get('integrity_level')}    "
                     f"Generated: {data['generated_at']}    Advisory only — observe & advise.")
 
     d.add_heading("1. Stack Profile", level=1)
@@ -107,7 +107,7 @@ def build_pdf(data) -> bytes:
     el = []
     el.append(Paragraph(f"IV&V Evidence Pack — {data['project']['name']}", ss["Title"]))
     el.append(Paragraph(f"Repository: {data['project'].get('repo_url','—')}", body))
-    el.append(Paragraph(f"Integrity tier: {data['project'].get('integrity_tier')} · Generated: {data['generated_at']} · Advisory only.", body))
+    el.append(Paragraph(f"Integrity level: {data['project'].get('integrity_level')} · Generated: {data['generated_at']} · Advisory only.", body))
     el.append(Spacer(1, 10))
 
     prof = data["profile"] or {}

@@ -119,7 +119,7 @@ export default function Admin() {
                 <div className="space-y-4">
                   {projects.map((p) => (
                     <div key={p.id} className="border border-gray-200 p-3">
-                      <div className="text-sm font-bold mb-2">{p.name} <span className="text-[10px] text-gray-400 font-normal">Tier {p.integrity_tier}</span></div>
+                      <div className="text-sm font-bold mb-2">{p.name} <span className="text-[10px] text-gray-400 font-normal">Integrity L{p.integrity_level}</span></div>
                       <div className="flex flex-wrap gap-2">
                         {roles.map((r) => {
                           const on = rolesFor(selectedUser, p.id).includes(r);

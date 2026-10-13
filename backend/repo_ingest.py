@@ -26,31 +26,91 @@ LANG_MAP = {".js": "JavaScript", ".jsx": "JavaScript (React)", ".ts": "TypeScrip
             ".tsx": "TypeScript (React)", ".py": "Python", ".java": "Java", ".go": "Go",
             ".rb": "Ruby", ".php": "PHP", ".cs": "C#", ".sql": "SQL", ".sh": "Shell",
             ".html": "HTML", ".css": "CSS", ".yml": "YAML", ".yaml": "YAML", ".json": "JSON"}
-MAX_FILES = 4000
-MAX_BYTES = 350_000
+MAX_FILES = int(os.environ.get("REPO_MAX_FILES", "20000"))
+MAX_BYTES = int(os.environ.get("REPO_MAX_BYTES", "350000"))
+CLONE_TIMEOUT = int(os.environ.get("REPO_CLONE_TIMEOUT", "600"))
+BRANCH_RE = re.compile(r"^[\w./\-]{1,100}$")
 
 EP_JS = re.compile(r"\b(?:app|router|api|route)\.(get|post|put|delete|patch)\s*\(\s*[`'\"]([^`'\"]+)[`'\"]", re.I)
 EP_PY = re.compile(r"@(?:app|router)\.(get|post|put|delete|patch)\s*\(\s*['\"]([^'\"]+)['\"]", re.I)
 
 
-def _auth_url(git_url: str, token: str = None) -> str:
-    if token and git_url.startswith("https://github.com/"):
-        return git_url.replace("https://", f"https://x-access-token:{token}@", 1)
-    return git_url
+class AuditCancelled(Exception):
+    pass
 
 
-def _clone_and_scan(git_url: str, token: str = None, key=None) -> dict:
-    """Blocking: clone (shallow) + profile + scan. Run via asyncio.to_thread."""
-    tmp = tempfile.mkdtemp(prefix="ivv_repo_")
+def _norm_folder(p: str) -> str:
+    return (p or "").strip().replace("\\", "/").strip("/").lower()
+
+
+def make_classifier(folder_map):
+    """Longest-prefix match of a repo-relative path to a folder-map entry."""
+    entries = sorted(((_norm_folder(e["path"]), e) for e in folder_map or []), key=lambda x: -len(x[0]))
+
+    def classify(rel: str):
+        r = rel.replace("\\", "/").lower()
+        for pref, e in entries:
+            if pref == "" or r == pref or r.startswith(pref + "/"):
+                return e
+        return None
+    return classify
+
+
+def _git_clone(git_url, dest, token, branch, cancel):
+    """Clone shallow. The token never appears on the command line or in the URL: git asks a
+    throw-away askpass helper that reads it from the child's environment only."""
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    askdir = None
+    cmd = ["git", "clone", "--depth", "1"]
+    if branch:
+        if not BRANCH_RE.match(branch):
+            raise ValueError("invalid branch name")
+        cmd += ["--branch", branch]
+    cmd += [git_url, dest]
     try:
-        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-        proc = subprocess.run(
-            ["git", "clone", "--depth", "1", _auth_url(git_url, token), tmp],
-            capture_output=True, text=True, timeout=120, env=env,
-        )
+        if token:
+            askdir = tempfile.mkdtemp(prefix="ivv_ask_")
+            helper = os.path.join(askdir, "ask.sh")
+            with open(helper, "w") as fh:
+                fh.write('#!/bin/sh\ncase "$1" in Username*) echo x-access-token;; *) echo "$GOV_GIT_TOKEN";; esac\n')
+            os.chmod(helper, 0o700)
+            env.update({"GIT_ASKPASS": helper, "GOV_GIT_TOKEN": token})
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+        waited = 0.0
+        while True:
+            try:
+                _, err = proc.communicate(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                waited += 1
+                if cancel is not None and cancel.is_set():
+                    proc.kill()
+                    raise AuditCancelled()
+                if waited > CLONE_TIMEOUT:
+                    proc.kill()
+                    raise RuntimeError(f"git clone timed out after {CLONE_TIMEOUT}s")
         if proc.returncode != 0:
-            msg = proc.stderr.strip()[:300].replace(token or "\x00", "***") if token else proc.stderr.strip()[:300]
+            msg = (err or "").strip()[:300]
+            if token:
+                msg = msg.replace(token, "***")
             raise RuntimeError(f"git clone failed: {msg}")
+    finally:
+        if askdir:
+            shutil.rmtree(askdir, ignore_errors=True)
+
+
+def _clone_and_scan(git_url: str, token: str = None, key=None, branch: str = None, folder_map=None,
+                    cancel=None, progress=None) -> dict:
+    """Blocking: clone (shallow) + profile + scan. Run via asyncio.to_thread."""
+    progress = progress or (lambda **k: None)
+    classify = make_classifier(folder_map)
+    tmp = tempfile.mkdtemp(prefix="ivv_repo_")
+    cov = {"files_seen": 0, "files_scanned": 0, "skipped_large": 0, "skipped_generated": 0,
+           "skipped_unreadable": 0, "skipped_over_cap": 0, "max_bytes": MAX_BYTES, "max_files": MAX_FILES}
+    try:
+        progress(stage="cloning")
+        _git_clone(git_url, tmp, token, branch, cancel)
+        progress(stage="scanning")
 
         languages, frameworks = {}, set()
         scanned, file_count, total_loc = [], 0, 0
@@ -59,8 +119,13 @@ def _clone_and_scan(git_url: str, token: str = None, key=None) -> dict:
         tests, code_file_count, ai_refs = [], 0, False
         endpoints, test_blobs = [], []
         source_ext = {".js", ".jsx", ".ts", ".tsx", ".py", ".java", ".go", ".rb", ".php", ".cs"}
+        capped = False
         for root, dirs, files in os.walk(tmp):
+            if capped:
+                break
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            if cancel is not None and cancel.is_set():
+                raise AuditCancelled()
             for fn in files:
                 ext = os.path.splitext(fn)[1].lower()
                 low = fn.lower()
@@ -72,12 +137,24 @@ def _clone_and_scan(git_url: str, token: str = None, key=None) -> dict:
                 if ext not in CODE_EXT and not is_readme and not is_spec:
                     continue
                 fpath = os.path.join(root, fn)
+                cov["files_seen"] += 1
+                rel0 = os.path.relpath(fpath, tmp).replace("\\", "/")
+                fm = classify(rel0)
+                if fm and fm.get("purpose") == "generated":
+                    cov["skipped_generated"] += 1
+                    continue
+                if file_count >= MAX_FILES:
+                    cov["skipped_over_cap"] += 1
+                    capped = True
+                    break
                 try:
                     if os.path.getsize(fpath) > MAX_BYTES:
+                        cov["skipped_large"] += 1
                         continue
                     with open(fpath, "r", encoding="utf-8", errors="ignore") as fh:
                         text = fh.read()
                 except Exception:
+                    cov["skipped_unreadable"] += 1
                     continue
                 rel = os.path.relpath(fpath, tmp)
                 tl = text.lower()
@@ -121,9 +198,12 @@ def _clone_and_scan(git_url: str, token: str = None, key=None) -> dict:
                     frameworks.add("PostgreSQL")
                 sec, pii, log, stat = scan_secrets(text, key), scan_pii(text, key), scan_logging_leak(text, key), static_code_issues(text)
                 if sec or pii or log or stat:
-                    scanned.append({"path": rel, "secrets": sec, "pii": pii, "logging": log, "static": stat})
-                if file_count >= MAX_FILES:
-                    break
+                    zone = (fm or {}).get("purpose") or ("tests" if is_test else "source")
+                    scanned.append({"path": rel, "secrets": sec, "pii": pii, "logging": log, "static": stat,
+                                    "zone": zone, "module": (fm or {}).get("module")})
+                cov["files_scanned"] = file_count
+                if file_count % 200 == 0:
+                    progress(stage="scanning", files=file_count)
         test_cats = {}
         for t in tests:
             test_cats[t["category"]] = test_cats.get(t["category"], 0) + 1
@@ -139,11 +219,13 @@ def _clone_and_scan(git_url: str, token: str = None, key=None) -> dict:
             "frameworks": sorted(frameworks),
             "code_files_scanned": file_count,
             "approx_loc": total_loc,
+            "coverage": cov,
             "spec": {"readme": readme, "openapi": openapi, "tests_total": len(tests),
                      "tests_by_category": test_cats, "source_files": code_file_count, "ai_refs": ai_refs,
                      "endpoints": endpoints, "endpoint_count": len(endpoints),
                      "untested_endpoints": sum(1 for e in endpoints if not e["tested_by"])},
         }
+        progress(stage="analysing", files=file_count)
         return {"profile": profile, "scanned": scanned}
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -152,47 +234,62 @@ def _clone_and_scan(git_url: str, token: str = None, key=None) -> dict:
 HIGH_PII = {"pii:aadhaar", "pii:pan", "pii:card_number", "pii:gstin"}
 
 
-async def ingest_repo(db, git_url: str, name: str = None, git_token: str = None):
-    if not re.match(r"^https://github\.com/[\w.\-]+/[\w.\-]+/?$", git_url.strip()):
-        raise ValueError("Please provide a valid public GitHub repository URL, e.g. https://github.com/org/repo")
+LEVEL_FROM_TIER = {"T1": 4, "T2": 3, "T3": 2, "T4": 1}
 
-    git_url_c = git_url.strip()
-    # Resolve the project (re-audit reuses the same project) and its per-project masking key
-    # BEFORE scanning, so every evidence hash is keyed to this project.
+# Live job state (progress is written from the scan thread). Final state is persisted in repo_jobs.
+JOB_STATE: dict = {}
+JOB_CANCEL: dict = {}
+
+
+def _fingerprint(f):
+    return f"{f['control_id']}|{f.get('subject_ref')}"
+
+
+async def ingest_repo(db, git_url: str, name: str = None, git_token: str = None, branch: str = None,
+                      integrity_level: int = 3, data_sensitivity: str = "unknown", folder_map=None,
+                      languages=None, cancel=None, progress=None, started_by: str = None):
+    if not re.match(r"^https://github\.com/[\w.\-]+/[\w.\-]+/?$", git_url.strip()):
+        raise ValueError("Please provide a valid GitHub repository URL, e.g. https://github.com/org/repo")
+    if branch and not BRANCH_RE.match(branch):
+        raise ValueError("Invalid branch name")
+    folder_map = [dict(e) for e in (folder_map or [])]
+
+    git_url_c = git_url.strip().rstrip("/")
     existing = await db.projects.find_one({"repo_url": git_url_c, "source": "github_live"}, {"_id": 0})
     pid = existing["id"] if existing else str(uuid4())
     pkey = await get_project_key(db, pid)
 
-    scan = await asyncio.to_thread(_clone_and_scan, git_url_c, git_token, pkey)
+    scan = await asyncio.to_thread(_clone_and_scan, git_url_c, git_token, pkey, branch, folder_map, cancel, progress)
     profile, scanned = scan["profile"], scan["scanned"]
 
-    repo_name = name or git_url_c.rstrip("/").split("/")[-1]
+    repo_name = name or git_url_c.split("/")[-1]
     now = datetime.now(timezone.utc).isoformat()
+    meta = {"branch": branch, "integrity_level": integrity_level, "data_sensitivity": data_sensitivity,
+            "folder_map": folder_map, "languages": languages or []}
 
-    # Re-audit in place: reuse an existing project for the same repo URL.
     if existing:
         project = existing
-        for coll in ("findings", "events", "reports", "repo_audits"):
-            await db[coll].delete_many({"project_id": pid})
-        await db.projects.update_one({"id": pid}, {"$set": {"stage": "Repository Audit", "last_audited_at": now}})
-        await ledger_mod.append_to_ledger(db, "project_reaudit", pid, {"name": repo_name, "repo_url": git_url_c})
+        await db.projects.update_one({"id": pid}, {"$set": {"stage": "Repository Audit", "last_audited_at": now, **meta}})
+        project.update(meta)
+        await ledger_mod.append_to_ledger(db, "project_reaudit", pid, {"name": repo_name, "repo_url": git_url_c}, project_id=pid)
     else:
         project = {
             "id": pid, "name": repo_name,
             "description": f"Live IV&V audit of {git_url_c}",
-            "integrity_tier": "T2", "stage": "Repository Audit", "repo_url": git_url_c,
-            "source": "github_live", "created_at": now,
+            "stage": "Repository Audit", "repo_url": git_url_c,
+            "source": "github_live", "created_at": now, "last_audited_at": now, **meta,
         }
         await db.projects.insert_one(dict(project))
-        await ledger_mod.append_to_ledger(db, "project", project["id"], {"name": repo_name, "repo_url": git_url_c})
+        await ledger_mod.append_to_ledger(db, "project", project["id"], {"name": repo_name, "repo_url": git_url_c}, project_id=pid)
 
     event = {
         "id": str(uuid4()), "project_id": project["id"], "event_type": "repo_audit",
-        "source_ref": git_url, "triggered_by": "A21", "controls_triggered": ["CTRL-06", "CTRL-07", "CTRL-08", "CTRL-10"],
+        "source_ref": git_url_c, "triggered_by": started_by or "A21",
+        "controls_triggered": ["CTRL-06", "CTRL-07", "CTRL-08", "CTRL-10"],
         "created_at": now,
     }
     await db.events.insert_one(dict(event))
-    await ledger_mod.append_to_ledger(db, "event", event["id"], {"event_type": "repo_audit", "project_id": project["id"]})
+    await ledger_mod.append_to_ledger(db, "event", event["id"], {"event_type": "repo_audit", "project_id": project["id"]}, project_id=pid)
 
     findings = []
 
@@ -202,6 +299,7 @@ async def ingest_repo(db, git_url: str, name: str = None, git_token: str = None)
 
     for item in scanned:
         rel = item["path"]
+        _mark = len(findings)
         if item["secrets"]:
             f = engine.build_finding(project, event, "CTRL-06", "Secrets Detection", "A05", "critical", 97, "FAIL",
                 f"{len(item['secrets'])} potential secret(s) in {rel}: {', '.join(sorted({h['type'] for h in item['secrets']}))}.",
@@ -233,6 +331,13 @@ async def ingest_repo(db, git_url: str, name: str = None, git_token: str = None)
                 [{"type": s["type"], "masked": s["type"], "hash": "", "file": rel, "line": s.get("line")} for s in item["static"]])
             f["level2_status"] = "confirmed_by_recompute"
             findings.append(f)
+
+        for f in findings[_mark:]:
+            f["module"] = item.get("module")
+            f["zone"] = item.get("zone")
+            if item.get("zone") == "tests" and f["control_id"] == "CTRL-07":
+                f["severity"] = "low"
+                f["reason"] += " (test fixture zone: severity reduced; secrets are never reduced)"
 
     # ---- Spec-derived findings (Requirements & System-Test) from README / OpenAPI / tests ----
     spec = profile.get("spec", {})
@@ -300,31 +405,67 @@ async def ingest_repo(db, git_url: str, name: str = None, git_token: str = None)
         for e in orphans[:25]:
             findings[-1]["evidence"].append({"type": "untested_endpoint", "masked": f"{e['method']} {e['path']}", "hash": ""})
 
-    if findings:
-        await db.findings.insert_many([dict(f) for f in findings])
-        for f in findings:
-            await ledger_mod.append_to_ledger(db, "finding", f["id"], {"control_id": f["control_id"], "verdict": f["verdict"], "severity": f["severity"]})
+    # ---- Reconcile with earlier audits: never delete history ----
+    for f in findings:
+        f["fingerprint"] = _fingerprint(f)
+        f["first_seen_at"] = now
+        f["last_seen_at"] = now
+    old = await db.findings.find({"project_id": project["id"]}, {"_id": 0}).to_list(None)
+    old_by_fp = {}
+    for o in old:
+        old_by_fp.setdefault(o.get("fingerprint") or _fingerprint(o), o)
+    new_fps = {f["fingerprint"] for f in findings}
+    diff = {"new": 0, "unchanged": 0, "resolved": 0}
+    to_insert, current = [], []
+    for f in findings:
+        o = old_by_fp.get(f["fingerprint"])
+        if o:
+            # same finding: keep its id and triage state, refresh the facts
+            upd = {k: f[k] for k in ("reason", "evidence", "severity", "verdict", "module", "zone", "tier",
+                                     "suggested_remedy", "confidence") if k in f}
+            upd.update({"last_seen_at": now, "fingerprint": f["fingerprint"], "event_id": event["id"]})
+            await db.findings.update_one({"id": o["id"]}, {"$set": upd})
+            o.update(upd)
+            current.append(o)
+            diff["unchanged"] += 1
+        else:
+            to_insert.append(f)
+            current.append(f)
+            diff["new"] += 1
+    resolved = [o for fp, o in old_by_fp.items() if fp not in new_fps]
+    if resolved:
+        for o in resolved:
+            o["superseded_at"] = now
+            o["superseded_by_event"] = event["id"]
+        await db.findings_archive.insert_many([dict(o) for o in resolved])
+        await db.findings.delete_many({"id": {"$in": [o["id"] for o in resolved]}})
+        diff["resolved"] = len(resolved)
+    if to_insert:
+        await db.findings.insert_many([dict(f) for f in to_insert])
+        for f in to_insert:
+            await ledger_mod.append_to_ledger(db, "finding", f["id"], {"control_id": f["control_id"], "verdict": f["verdict"], "severity": f["severity"]}, project_id=pid)
+    findings = current
 
-    # refine integrity tier
-    has_secret = any(f["control_id"] == "CTRL-06" for f in findings)
-    has_high_pii = any(f["control_id"] == "CTRL-07" and f.get("tier") == "T1" for f in findings)
-    tier = "T1" if (has_secret or has_high_pii) else ("T2" if findings else "T3")
-    await db.projects.update_one({"id": project["id"]}, {"$set": {"integrity_tier": tier}})
-    project["integrity_tier"] = tier
+    has_secret = any(f["control_id"] == "CTRL-06" and f["verdict"] == "FAIL" for f in findings)
+    has_high_pii = any(f["control_id"] == "CTRL-07" and f.get("tier") == "T1" and f.get("zone") != "tests" for f in findings)
+    suggested = 4 if (has_secret or has_high_pii) else (3 if any(f["verdict"] == "FAIL" for f in findings) else 2)
 
+    cov = profile.get("coverage", {})
     audit = {
-        "id": str(uuid4()), "project_id": project["id"], "github_url": git_url,
+        "id": str(uuid4()), "project_id": project["id"], "github_url": git_url_c, "branch": branch,
         "detected_languages": list(profile["languages"].keys()),
         "frameworks": profile["frameworks"],
-        "suggested_integrity_tier": tier,
+        "integrity_level": integrity_level, "suggested_integrity_level": suggested,
+        "data_sensitivity": data_sensitivity,
         "code_files_scanned": profile["code_files_scanned"], "approx_loc": profile["approx_loc"],
-        "folder_map": [], "note": "Live repository cloned and scanned (read-only) by the platform.",
+        "folder_map": folder_map, "coverage": cov, "diff": diff,
+        "note": "Repository cloned and scanned read-only by the platform. Coverage counters show what was not scanned.",
         "endpoints": profile.get("spec", {}).get("endpoints", []),
         "endpoint_count": profile.get("spec", {}).get("endpoint_count", 0),
         "created_at": now,
     }
     await db.repo_audits.insert_one(dict(audit))
-    await ledger_mod.append_to_ledger(db, "repo_audit", audit["id"], {"project_id": project["id"], "github_url": git_url})
+    await ledger_mod.append_to_ledger(db, "repo_audit", audit["id"], {"project_id": project["id"], "github_url": git_url_c, "diff": diff}, project_id=pid)
     audit.pop("_id", None)
 
     author_report = await engine.generate_author_report(db, project, event, findings)
@@ -340,8 +481,39 @@ async def ingest_repo(db, git_url: str, name: str = None, git_token: str = None)
         "project": project,
         "profile": profile,
         "audit": audit,
+        "diff": diff,
         "finding_summary": {"total": len(findings), "by_severity": by_sev, "by_control": by_ctrl,
                             "fail": sum(1 for f in findings if f["verdict"] == "FAIL")},
         "reports": [author_report, team_lead_report],
         "gates": gates,
     }
+
+
+async def run_job(db, job_id: str, params: dict, started_by: str):
+    """Background wrapper: tracks status/progress in repo_jobs; cancellable."""
+    import threading
+    cancel = threading.Event()
+    JOB_CANCEL[job_id] = cancel
+    JOB_STATE[job_id] = {"status": "queued", "stage": "queued"}
+
+    def progress(**k):
+        JOB_STATE.setdefault(job_id, {}).update(k)
+        if "stage" in k:
+            JOB_STATE[job_id]["status"] = k["stage"]
+
+    await db.repo_jobs.update_one({"id": job_id}, {"$set": {"status": "cloning", "started_at": datetime.now(timezone.utc).isoformat()}})
+    try:
+        result = await ingest_repo(db, cancel=cancel, progress=progress, started_by=started_by, **params)
+        pid = result["project"]["id"]
+        await db.repo_jobs.update_one({"id": job_id}, {"$set": {
+            "status": "done", "project_id": pid, "diff": result["diff"],
+            "finding_summary": result["finding_summary"], "coverage": result["profile"].get("coverage"),
+            "finished_at": datetime.now(timezone.utc).isoformat()}})
+        return result
+    except AuditCancelled:
+        await db.repo_jobs.update_one({"id": job_id}, {"$set": {"status": "cancelled", "finished_at": datetime.now(timezone.utc).isoformat()}})
+    except Exception as e:  # noqa: BLE001 - job must record any failure
+        await db.repo_jobs.update_one({"id": job_id}, {"$set": {"status": "failed", "error": str(e)[:500], "finished_at": datetime.now(timezone.utc).isoformat()}})
+    finally:
+        JOB_STATE.pop(job_id, None)
+        JOB_CANCEL.pop(job_id, None)

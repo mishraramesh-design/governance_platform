@@ -21,19 +21,33 @@ router = APIRouter()
 
 
 @router.get("/ledger")
-async def get_ledger():
-    return await db.ledger.find({}, {"_id": 0}).sort("seq", 1).to_list(200000)
+async def get_ledger(response: Response, project_id: str = None, page: int = 1, page_size: int = 200):
+    """Paginated. project_id selects that project's chain; omit for the platform chain.
+    Total is returned in the X-Total-Count header (never silently truncated)."""
+    page, page_size = max(1, page), min(max(1, page_size), 1000)
+    q = {"chain": project_id or ledger_mod.GLOBAL}
+    response.headers["X-Total-Count"] = str(await db.ledger.count_documents(q))
+    return await db.ledger.find(q, {"_id": 0}).sort("seq", 1).skip((page - 1) * page_size).limit(page_size).to_list(page_size)
+
+
+@router.get("/ledger/chains")
+async def ledger_chains():
+    out = []
+    for c in await ledger_mod.chains(db):
+        out.append({"chain": c, "entries": await db.ledger.count_documents({"chain": c})})
+    return out
 
 
 @router.get("/ledger/verify")
-async def verify_ledger():
-    return await ledger_mod.verify_integrity(db)
+async def verify_ledger(project_id: str = None):
+    ledger_mod._cache["val"] = None
+    return await ledger_mod.verify_integrity(db, project_id)
 
 
 @router.post("/ledger/rebuild")
-async def rebuild_ledger(user=Depends(auth.get_current_user)):
+async def rebuild_ledger(chain: str = ledger_mod.GLOBAL, user=Depends(auth.get_current_user)):
     await auth.require_any_global_role(user, {auth.ADMIN_ROLE})
-    return await ledger_mod.rebuild_chain(db)
+    return await ledger_mod.rebuild_chain(db, chain)
 
 
 @router.get("/edge-clients")
@@ -218,19 +232,88 @@ async def verify_edge_bundle(bundle_id: str):
 
 
 
+_TASKS: set = set()
+
+
+def _params(payload):
+    return dict(git_url=payload.github_url, name=payload.name, git_token=payload.git_token,
+                branch=(payload.branch or None), integrity_level=payload.integrity_level,
+                data_sensitivity=payload.data_sensitivity or "unknown",
+                folder_map=[e.model_dump() for e in payload.folder_map], languages=payload.languages)
+
+
 @router.post("/repo-audit/ingest")
-async def ingest_repo_audit(payload: RepoAuditRequest, user=Depends(auth.get_current_user)):
+async def ingest_repo_audit(payload: RepoAuditRequest, sync: bool = False, user=Depends(auth.get_current_user)):
     await auth.require_any_global_role(user, auth.GOVERNANCE_ROLES)
+    params = _params(payload)
     try:
-        result = await repo_ingest.ingest_repo(db, payload.github_url, payload.name, payload.git_token)
-        pid = (result.get("project") or {}).get("id")
-        if pid:
-            await auth.ensure_project_assignments(pid)
-        return result
+        if sync:
+            result = await repo_ingest.ingest_repo(db, started_by=user["name"], **params)
+            pid = (result.get("project") or {}).get("id")
+            if pid:
+                await auth.ensure_project_assignments(pid)
+            return result
+        # validate cheaply before queueing
+        import re as _re
+        if not _re.match(r"^https://github\.com/[\w.\-]+/[\w.\-]+/?$", payload.github_url.strip()):
+            raise ValueError("Please provide a valid GitHub repository URL, e.g. https://github.com/org/repo")
+        if payload.branch and not repo_ingest.BRANCH_RE.match(payload.branch):
+            raise ValueError("Invalid branch name")
     except ValueError as e:
         raise HTTPException(400, str(e))
     except RuntimeError as e:
         raise HTTPException(502, str(e))
+    import asyncio
+    from uuid import uuid4
+    from datetime import datetime, timezone
+    job_id = str(uuid4())
+    await db.repo_jobs.insert_one({
+        "id": job_id, "status": "queued", "github_url": payload.github_url.strip(), "branch": payload.branch,
+        "requested_by": user["id"], "requested_by_name": user["name"],
+        "created_at": datetime.now(timezone.utc).isoformat()})
+
+    async def _go():
+        result = await repo_ingest.run_job(db, job_id, params, user["name"])
+        if result:
+            await auth.ensure_project_assignments(result["project"]["id"])
+    t = asyncio.create_task(_go())
+    _TASKS.add(t)
+    t.add_done_callback(_TASKS.discard)
+    return {"job_id": job_id, "status": "queued"}
+
+
+def _job_view(j):
+    live = repo_ingest.JOB_STATE.get(j["id"])
+    if live and j.get("status") not in ("done", "failed", "cancelled"):
+        j = {**j, **{k: v for k, v in live.items() if k != "status"}, "status": live.get("status", j["status"])}
+    return j
+
+
+@router.get("/repo-audit/jobs")
+async def list_repo_jobs(limit: int = 30, _u=Depends(auth.require_read_access)):
+    rows = await db.repo_jobs.find({}, {"_id": 0}).sort("created_at", -1).to_list(min(limit, 200))
+    return [_job_view(j) for j in rows]
+
+
+@router.get("/repo-audit/jobs/{job_id}")
+async def get_repo_job(job_id: str, _u=Depends(auth.require_read_access)):
+    j = await db.repo_jobs.find_one({"id": job_id}, {"_id": 0})
+    if not j:
+        raise HTTPException(404, "job not found")
+    return _job_view(j)
+
+
+@router.post("/repo-audit/jobs/{job_id}/cancel")
+async def cancel_repo_job(job_id: str, user=Depends(auth.get_current_user)):
+    await auth.require_any_global_role(user, auth.GOVERNANCE_ROLES)
+    j = await db.repo_jobs.find_one({"id": job_id}, {"_id": 0})
+    if not j:
+        raise HTTPException(404, "job not found")
+    ev = repo_ingest.JOB_CANCEL.get(job_id)
+    if not ev:
+        raise HTTPException(409, f"job is not running (status {j['status']})")
+    ev.set()
+    return {"job_id": job_id, "cancelling": True}
 
 
 @router.get("/repo-audit/{project_id}/evidence-pack")
@@ -240,14 +323,14 @@ async def evidence_pack_endpoint(project_id: str, format: str = "pdf"):
     if not project:
         raise HTTPException(404, "project not found")
     audit = await db.repo_audits.find_one({"project_id": project_id}, {"_id": 0}, sort=[("created_at", -1)])
-    findings = await db.findings.find({"project_id": project_id}, {"_id": 0}).to_list(5000)
+    findings = await db.findings.find({"project_id": project_id}, {"_id": 0}).to_list(None)
     reports = await db.reports.find({"project_id": project_id}, {"_id": 0}).to_list(50)
     gates = await engine.compute_gate_status(db, project_id)
-    verify = await ledger_mod.verify_integrity(db)
+    verify = await ledger_mod.verify_integrity(db, project_id)
     refs = {project_id} | {f["id"] for f in findings} | {r["id"] for r in reports}
     if audit:
         refs.add(audit["id"])
-    led = await db.ledger.find({"payload_ref": {"$in": list(refs)}}, {"_id": 0}).sort("seq", 1).to_list(5000)
+    led = await db.ledger.find({"chain": project_id, "payload_ref": {"$in": list(refs)}}, {"_id": 0}).sort("seq", 1).to_list(None)
     data = {
         "project": project, "profile": _audit_profile(audit),
         "audit": audit or {}, "findings": findings, "reports": reports, "gates": gates,
@@ -280,12 +363,12 @@ async def simulate_repo_audit(payload: RepoAuditRequest, user=Depends(auth.get_c
     seed_val = int(digest[:8], 16)
     languages_pool = ["Python", "TypeScript", "Java", "Go", "JavaScript", "C#"]
     languages = [languages_pool[seed_val % len(languages_pool)], languages_pool[(seed_val // 7) % len(languages_pool)]]
-    suggested_tier = ["T1", "T2", "T3", "T4"][seed_val % 4]
+    suggested_tier = [4, 3, 2, 1][seed_val % 4]
     folder_map = ["/src", "/tests", "/infra", "/docs"] if seed_val % 2 == 0 else ["/app", "/services", "/pipelines"]
 
     audit = {
         "id": str(uuid4()), "project_id": payload.project_id, "github_url": payload.github_url,
-        "detected_languages": sorted(set(languages)), "suggested_integrity_tier": suggested_tier,
+        "detected_languages": sorted(set(languages)), "suggested_integrity_level": suggested_tier,
         "folder_map": folder_map, "note": "Simulated - no live repository was accessed in this prototype.",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }

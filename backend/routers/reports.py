@@ -1,7 +1,7 @@
 from uuid import uuid4
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, HTTPException, Query, Depends, Response
 from fastapi.responses import HTMLResponse
 
 from database import db
@@ -9,6 +9,7 @@ from models import ArtifactGenerateRequest
 import engine
 import ledger as ledger_mod
 import auth
+from pagination import paged
 
 router = APIRouter()
 
@@ -31,11 +32,11 @@ def render_html(title: str, subtitle: str, sections, ledger_hash: str = None, ti
 
 
 @router.get("/reports")
-async def list_reports(project_id: str = Query(...), type: str = None):
+async def list_reports(response: Response, project_id: str = Query(...), type: str = None, page: int = 1, page_size: int = 100):
     q = {"project_id": project_id}
     if type:
         q["type"] = type
-    return await db.reports.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return await paged(db.reports, q, [("created_at", -1)], response, page, page_size)
 
 
 @router.get("/reports/{report_id}")
@@ -88,19 +89,19 @@ async def generate_artifact(payload: ArtifactGenerateRequest, user=Depends(auth.
             f"{r['requirement_id']}: design={r['design_ids']} commit={r['commit_ids']} test={r['test_ids']} complete={r['trace_complete']}" for r in trace["rows"]
         ]})
     elif artifact_type == "verification_summary":
-        findings = await db.findings.find({"project_id": payload.project_id}, {"_id": 0}).to_list(2000)
+        findings = await db.findings.find({"project_id": payload.project_id}, {"_id": 0}).to_list(None)
         counts = {}
         for f in findings:
             counts[f["verdict"]] = counts.get(f["verdict"], 0) + 1
         sections.append({"heading": "Verdict Totals", "body": [f"{k}: {v}" for k, v in counts.items()]})
     elif artifact_type == "defect_log":
-        findings = await db.findings.find({"project_id": payload.project_id, "verdict": "FAIL"}, {"_id": 0}).to_list(2000)
+        findings = await db.findings.find({"project_id": payload.project_id, "verdict": "FAIL"}, {"_id": 0}).to_list(None)
         sections.append({"heading": "Open / Historical FAIL Findings", "body": [f"[{f['severity']}] {f['control_name']}: {f['reason']}" for f in findings]})
     elif artifact_type == "gate_readiness":
         gates = await engine.compute_gate_status(db, payload.project_id)
         sections.append({"heading": "Gate Status", "body": [f"{g['id']} {g['name']}: {g['status']} - {g['reason']}" for g in gates]})
     elif artifact_type == "data_protection_summary":
-        findings = await db.findings.find({"project_id": payload.project_id, "tags": "privacy"}, {"_id": 0}).to_list(2000)
+        findings = await db.findings.find({"project_id": payload.project_id, "tags": "privacy"}, {"_id": 0}).to_list(None)
         sections.append({"heading": "Privacy / DPDP-tagged Findings", "body": [f"[{f['verdict']}] {f['control_name']}: {f['reason']}" for f in findings] or ["No privacy findings recorded."]})
     elif artifact_type == "metrics_summary":
         total_findings = await db.findings.count_documents({"project_id": payload.project_id})
@@ -123,8 +124,8 @@ async def generate_artifact(payload: ArtifactGenerateRequest, user=Depends(auth.
 
 
 @router.get("/artifacts")
-async def list_artifacts(project_id: str = Query(...)):
-    return await db.artifacts.find({"project_id": project_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
+async def list_artifacts(response: Response, project_id: str = Query(...), page: int = 1, page_size: int = 100):
+    return await paged(db.artifacts, {"project_id": project_id}, [("created_at", -1)], response, page, page_size)
 
 
 @router.get("/artifacts/{artifact_id}/download")

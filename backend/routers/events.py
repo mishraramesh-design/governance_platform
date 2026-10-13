@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, HTTPException, Query, Depends, Response
 from typing import Optional
 from uuid import uuid4
 from datetime import datetime, timezone
@@ -8,13 +8,14 @@ from models import EventSimulateRequest, TriageDecisionRequest, AdjudicationDeci
 import engine
 import ledger as ledger_mod
 import auth
+from pagination import paged
 
 router = APIRouter()
 
 
 @router.get("/events")
-async def list_events(project_id: str = Query(...)):
-    return await db.events.find({"project_id": project_id}, {"_id": 0}).sort("created_at", -1).to_list(200)
+async def list_events(response: Response, project_id: str = Query(...), page: int = 1, page_size: int = 200):
+    return await paged(db.events, {"project_id": project_id}, [("created_at", -1)], response, page, page_size)
 
 
 @router.post("/events/simulate")
@@ -29,9 +30,11 @@ async def simulate_event(payload: EventSimulateRequest, user=Depends(auth.get_cu
 
 
 @router.get("/findings")
-async def list_findings(project_id: str = Query(...), control_id: Optional[str] = None,
+async def list_findings(response: Response, project_id: str = Query(...), control_id: Optional[str] = None,
                          severity: Optional[str] = None, verdict: Optional[str] = None,
-                         tag: Optional[str] = None, status: Optional[str] = None):
+                         tag: Optional[str] = None, status: Optional[str] = None,
+                         module: Optional[str] = None, zone: Optional[str] = None, search: Optional[str] = None,
+                         page: int = 1, page_size: int = 200):
     q = {"project_id": project_id}
     if control_id:
         q["control_id"] = control_id
@@ -43,7 +46,15 @@ async def list_findings(project_id: str = Query(...), control_id: Optional[str] 
         q["tags"] = tag
     if status:
         q["status"] = status
-    return await db.findings.find(q, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    if module:
+        q["module"] = module
+    if zone:
+        q["zone"] = zone
+    if search:
+        import re as _re
+        rx = {"$regex": _re.escape(search), "$options": "i"}
+        q["$or"] = [{"reason": rx}, {"subject_ref": rx}, {"control_name": rx}]
+    return await paged(db.findings, q, [("created_at", -1)], response, page, page_size)
 
 
 @router.get("/findings/{finding_id}")
@@ -95,8 +106,8 @@ async def fetch_live_evidence(finding_id: str, evidence_index: int):
 
 
 @router.get("/adjudications")
-async def list_adjudications(project_id: str = Query(...)):
-    return await db.adjudications.find({"project_id": project_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
+async def list_adjudications(response: Response, project_id: str = Query(...), page: int = 1, page_size: int = 200):
+    return await paged(db.adjudications, {"project_id": project_id}, [("created_at", -1)], response, page, page_size)
 
 
 @router.post("/adjudications/{adjudication_id}/decide")

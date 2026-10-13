@@ -158,7 +158,7 @@ export function AppShell({ children }) {
             )}
             {currentProject && (
               <span className="hidden md:inline text-xs text-gray-400 truncate">
-                Project: <span className="text-black font-semibold">{currentProject.name}</span> · Tier {currentProject.integrity_tier}
+                Project: <span className="text-black font-semibold">{currentProject.name}</span> · Integrity L{currentProject.integrity_level}
               </span>
             )}
           </div>

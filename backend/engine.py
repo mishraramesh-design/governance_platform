@@ -638,7 +638,7 @@ async def compute_gate_status(db, project_id):
                 "status": status, "reason": reason, "advisory_note": "Advisory only - the listed human gate owner(s) hold final decision authority."}
 
     g1 = gate("G1", "Initiation Exit", "Concept, criticality tier and governance owners defined", ["Business Owner", "Sponsor", "IV&V Lead"],
-               "Ready", f"Project registered at integrity tier {project.get('integrity_tier')} with owners assigned.")
+               "Ready", f"Project registered at integrity level {project.get('integrity_level')} with owners assigned.")
     g2_status = "At Risk" if req_fails else "Ready"
     g2 = gate("G2", "Requirements Baseline", "Requirements quality & traceability reviewed", ["Business Owner", "BA Lead", "Architect", "IV&V Lead"],
                g2_status, f"{len(req_fails)} requirement(s) failing the quality bar." if req_fails else "All requirements meet the baseline quality bar.")

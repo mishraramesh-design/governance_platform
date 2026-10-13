@@ -47,11 +47,40 @@ class AdjudicationDecisionRequest(BaseModel):
         return v
 
 
+FOLDER_PURPOSES = ("source", "tests", "config", "infra", "docs", "generated", "other")
+
+
+class FolderMapEntry(BaseModel):
+    path: str
+    purpose: str = "source"
+    module: Optional[str] = None
+    notes: Optional[str] = ""
+
+    @field_validator("purpose")
+    @classmethod
+    def _purpose(cls, v):
+        if v not in FOLDER_PURPOSES:
+            raise ValueError("purpose must be one of: " + ", ".join(FOLDER_PURPOSES))
+        return v
+
+
 class RepoAuditRequest(BaseModel):
     project_id: Optional[str] = None
     github_url: str
     name: Optional[str] = None
     git_token: Optional[str] = None
+    branch: Optional[str] = None
+    languages: List[str] = []
+    integrity_level: int = 3          # IEEE 1012 integrity level 1-4 (NOT the data tier T0-T4)
+    data_sensitivity: Optional[str] = "unknown"
+    folder_map: List[FolderMapEntry] = []
+
+    @field_validator("integrity_level")
+    @classmethod
+    def _level(cls, v):
+        if v not in (1, 2, 3, 4):
+            raise ValueError("integrity_level must be 1-4")
+        return v
 
 
 class RuntimeAnalyzeRequest(BaseModel):

@@ -20,7 +20,7 @@ export default function Projects() {
         {projects?.map((p) => (
           <div key={p.id} data-testid={`project-card-${p.id}`} className="border border-gray-200 p-5 hover:border-black transition-colors duration-100">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-[10px] font-bold uppercase tracking-wider bg-black text-[#FFE600] px-2 py-0.5">{p.integrity_tier}</span>
+              <span className="text-[10px] font-bold uppercase tracking-wider bg-black text-[#FFE600] px-2 py-0.5">L{p.integrity_level}</span>
               <span className="text-[10px] text-gray-400 uppercase tracking-wide">{p.stage}</span>
             </div>
             <h3 className="font-[Chivo] text-lg font-bold tracking-tight mb-1">{p.name}</h3>

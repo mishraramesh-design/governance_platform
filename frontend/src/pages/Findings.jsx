@@ -13,18 +13,22 @@ export default function Findings() {
   const { projectId } = useProject();
   const { role, isAuthenticated } = useAuth();
   const qc = useQueryClient();
-  const [filters, setFilters] = useState({ severity: "", verdict: "" });
+  const [filters, setFilters] = useState({ severity: "", verdict: "", module: "", search: "" });
+  const [page, setPage] = useState(1);
+  const PS = 100;
   const [selected, setSelected] = useState(null);
 
-  const { data: findings, isLoading } = useQuery({
-    queryKey: ["findings", projectId, filters],
+  const { data: pageData, isLoading } = useQuery({
+    queryKey: ["findings", projectId, filters, page],
     queryFn: () =>
       api
-        .get("/findings", { params: { project_id: projectId, ...(filters.severity && { severity: filters.severity }), ...(filters.verdict && { verdict: filters.verdict }) } })
-        .then((r) => r.data),
+        .get("/findings", { params: { project_id: projectId, page, page_size: PS, ...(filters.severity && { severity: filters.severity }), ...(filters.verdict && { verdict: filters.verdict }), ...(filters.module && { module: filters.module }), ...(filters.search && { search: filters.search }) } })
+        .then((r) => ({ rows: r.data, total: Number(r.headers["x-total-count"] || r.data.length) })),
     enabled: !!projectId,
   });
 
+  const findings = pageData?.rows;
+  const total = pageData?.total || 0;
   const { data: agentsData } = useQuery({
     queryKey: ["harness-agents-map"],
     queryFn: () => api.get("/harness/agents").then((r) => r.data),
@@ -69,14 +73,17 @@ export default function Findings() {
       <PageHeader title="Findings Explorer" subtitle="Every finding carries a tri-state verdict (PASS / FAIL / NOT ASSESSED), severity, confidence, evidence and a suggested remedy. Nothing here is a decision." />
 
       <div className="flex gap-3 mb-5">
-        <select data-testid="filter-severity" value={filters.severity} onChange={(e) => setFilters((f) => ({ ...f, severity: e.target.value }))} className="border border-gray-300 px-2 py-1.5 text-xs">
+        <select data-testid="filter-severity" value={filters.severity} onChange={(e) => { setPage(1); setFilters((f) => ({ ...f, severity: e.target.value })); }} className="border border-gray-300 px-2 py-1.5 text-xs">
           <option value="">All Severities</option>
           {["critical", "high", "medium", "low", "info"].map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
-        <select data-testid="filter-verdict" value={filters.verdict} onChange={(e) => setFilters((f) => ({ ...f, verdict: e.target.value }))} className="border border-gray-300 px-2 py-1.5 text-xs">
+        <select data-testid="filter-verdict" value={filters.verdict} onChange={(e) => { setPage(1); setFilters((f) => ({ ...f, verdict: e.target.value })); }} className="border border-gray-300 px-2 py-1.5 text-xs">
           <option value="">All Verdicts</option>
           {["PASS", "FAIL", "NOT_ASSESSED"].map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
+        <input data-testid="filter-module" value={filters.module} onChange={(e) => { setPage(1); setFilters((f) => ({ ...f, module: e.target.value })); }} placeholder="Module" className="border border-gray-300 px-2 py-1.5 text-xs w-36" />
+        <input data-testid="filter-search" value={filters.search} onChange={(e) => { setPage(1); setFilters((f) => ({ ...f, search: e.target.value })); }} placeholder="Search file / reason" className="border border-gray-300 px-2 py-1.5 text-xs w-56" />
+        <span className="text-xs text-gray-500 self-center" data-testid="findings-total">{total} finding(s)</span>
       </div>
 
       {isLoading && <div className="text-sm text-gray-400">Loading…</div>}
@@ -170,6 +177,11 @@ export default function Findings() {
           )}
         </SheetContent>
       </Sheet>
+      <div className="flex items-center gap-3 mt-4 text-xs" data-testid="findings-pager">
+        <button disabled={page <= 1} onClick={() => setPage(page - 1)} className="border border-black px-2 py-1 disabled:opacity-30">← Prev</button>
+        <span>Page {page} of {Math.max(1, Math.ceil(total / PS))}</span>
+        <button disabled={page * PS >= total} onClick={() => setPage(page + 1)} className="border border-black px-2 py-1 disabled:opacity-30">Next →</button>
+      </div>
     </div>
   );
 }

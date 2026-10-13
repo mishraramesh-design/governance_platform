@@ -341,11 +341,11 @@ async def _seed(db):
     now = datetime.now(timezone.utc).isoformat()
     projects = [
         {"id": str(uuid4()), "name": "UPI Settlement Gateway", "description": "Core payments settlement platform for a regulated fintech client.",
-         "integrity_tier": "T4", "stage": "Coding / Build", "created_at": now},
+         "integrity_level": 1, "stage": "Coding / Build", "created_at": now},
         {"id": str(uuid4()), "name": "Citizen Services Portal", "description": "Public-sector self-service portal handling India citizen PII at scale.",
-         "integrity_tier": "T3", "stage": "Requirements", "created_at": now},
+         "integrity_level": 2, "stage": "Requirements", "created_at": now},
         {"id": str(uuid4()), "name": "Internal Analytics Dashboard", "description": "Low-risk internal BI dashboard for operations reporting.",
-         "integrity_tier": "T1", "stage": "Release", "created_at": now},
+         "integrity_level": 4, "stage": "Release", "created_at": now},
     ]
     await db.projects.insert_many([dict(p) for p in projects])
 
