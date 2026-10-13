@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import api from "../lib/api";
+import api, { downloadAuthed } from "../lib/api";
 import { useProject } from "../context/ProjectContext";
 import { PageHeader } from "../components/PageHeader";
 
@@ -57,8 +57,8 @@ export default function RepoAudit() {
               <p className="text-xs text-gray-500">One-click auditor bundle: profile, findings, reports, API traceability and ledger hashes.</p>
             </div>
             <div className="flex gap-2">
-              <a data-testid="download-pdf-btn" href={`${BACKEND}/api/repo-audit/${result.project.id}/evidence-pack?format=pdf`} target="_blank" rel="noreferrer" className="text-xs font-bold bg-black text-white px-3 py-2 hover:bg-[#FFE600] hover:text-black transition-colors">Download PDF</a>
-              <a data-testid="download-docx-btn" href={`${BACKEND}/api/repo-audit/${result.project.id}/evidence-pack?format=docx`} target="_blank" rel="noreferrer" className="text-xs font-bold border border-black px-3 py-2 hover:bg-black hover:text-[#FFE600] transition-colors">Download DOCX</a>
+              <button data-testid="download-pdf-btn" onClick={() => downloadAuthed(`/repo-audit/${result.project.id}/evidence-pack?format=pdf`, "evidence_pack.pdf")} className="text-xs font-bold bg-black text-white px-3 py-2 hover:bg-[#FFE600] hover:text-black transition-colors">Download PDF</button>
+              <button data-testid="download-docx-btn" onClick={() => downloadAuthed(`/repo-audit/${result.project.id}/evidence-pack?format=docx`, "evidence_pack.docx")} className="text-xs font-bold border border-black px-3 py-2 hover:bg-black hover:text-[#FFE600] transition-colors">Download DOCX</button>
             </div>
           </div>
           {/* Stack profile */}

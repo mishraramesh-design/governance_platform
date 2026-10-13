@@ -48,10 +48,6 @@ ROUTING_MATRIX = [
 ]
 
 
-def demo_token_for(user_id: str) -> str:
-    return f"gov-demo-{user_id}-token-2026"
-
-
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -68,23 +64,42 @@ async def ensure_users_seeded(db):
     and backfill commit author_user_id for segregation-of-duties resolution."""
     now = datetime.now(timezone.utc).isoformat()
 
+    import os
+    import auth as auth_mod
+    import logging
+    log = logging.getLogger(__name__)
+
+    # Legacy deterministic seed tokens (older builds) are revoked unconditionally.
+    await db.api_tokens.update_many({"created_by": "seed", "revoked": False}, {"$set": {"revoked": True}})
+
     if await db.users.count_documents({}) == 0:
+        # DEMO_MODE seeds the whole demo cast (they sign in via demo-login). Otherwise only the
+        # platform owner exists and receives a bootstrap token (BOOTSTRAP_ADMIN_TOKEN or one
+        # random token printed once to the server log).
+        cast = DEMO_USERS if auth_mod.demo_mode() else [u for u in DEMO_USERS if u["id"] == "u-ramesh"]
         await db.users.insert_many([
             {"id": u["id"], "name": u["name"], "email": u["email"], "active": True, "created_at": now}
-            for u in DEMO_USERS])
-        await db.api_tokens.insert_many([
-            {"id": f"tok-{u['id']}", "token_hash": _hash_token(demo_token_for(u["id"])),
-             "user_id": u["id"], "created_by": "seed", "revoked": False, "created_at": now}
-            for u in DEMO_USERS])
+            for u in cast])
 
-    projects = await db.projects.find({}, {"_id": 0, "id": 1}).to_list(1000)
+    # Non-demo deployments always need a way in: if the owner has no live token, issue one.
+    if not auth_mod.demo_mode() and await db.users.find_one({"id": "u-ramesh"}) and \
+            not await db.api_tokens.find_one({"user_id": "u-ramesh", "revoked": False}):
+        boot = os.environ.get("BOOTSTRAP_ADMIN_TOKEN") or auth_mod.generate_token()
+        await db.api_tokens.insert_one({
+            "id": str(uuid4()), "token_hash": _hash_token(boot), "user_id": "u-ramesh",
+            "created_by": "bootstrap", "revoked": False, "created_at": now})
+        if not os.environ.get("BOOTSTRAP_ADMIN_TOKEN"):
+            log.warning("BOOTSTRAP ADMIN TOKEN (shown once): %s", boot)
+
+    projects = await db.projects.find({}, {"_id": 0, "id": 1}).to_list(100000)
+    existing_ids = {u["id"] async for u in db.users.find({}, {"_id": 0, "id": 1})}
 
     # One-time role-schema migration: wipe and reseed standing role assignments so the
     # new canonical role set replaces any legacy role names.
     meta = await db.app_meta.find_one({"key": "role_schema"}, {"_id": 0})
     if not meta or meta.get("version") != ROLE_SCHEMA_VERSION:
         await db.role_assignments.delete_many({})
-        for u in DEMO_USERS:
+        for u in [d for d in DEMO_USERS if d["id"] in existing_ids]:
             for p in projects:
                 await db.role_assignments.insert_one({
                     "id": str(uuid4()), "user_id": u["id"], "project_id": p["id"],
@@ -94,7 +109,7 @@ async def ensure_users_seeded(db):
                                      upsert=True)
     else:
         # Ensure any newly added project gets each user's standing roles.
-        for u in DEMO_USERS:
+        for u in [d for d in DEMO_USERS if d["id"] in existing_ids]:
             for p in projects:
                 if await db.role_assignments.find_one({"user_id": u["id"], "project_id": p["id"]}):
                     continue

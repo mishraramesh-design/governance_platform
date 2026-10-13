@@ -7,6 +7,7 @@ Design:
 - Missing/invalid/revoked token -> 401. Valid token but wrong role -> 403.
 """
 import hashlib
+import os
 import secrets
 from datetime import datetime, timezone
 
@@ -20,6 +21,11 @@ bearer_scheme = HTTPBearer(auto_error=False)
 # Roles that may perform platform-wide (non project-scoped) governance actions.
 GOVERNANCE_ROLES = {"Programme Manager", "Quality Lead"}
 ADMIN_ROLE = "Programme Manager"
+
+
+def demo_mode() -> bool:
+    """DEMO_MODE=true enables the unauthenticated demo sign-in and open reads. Default: off."""
+    return os.environ.get("DEMO_MODE", "false").strip().lower() == "true"
 
 
 def now_iso():
@@ -60,6 +66,26 @@ async def get_optional_user(credentials: HTTPAuthorizationCredentials = Depends(
     """Returns the user if a valid token is present, else None (never raises 401).
     Used by ingest endpoints that accept anonymous input as 'unattributed'."""
     return await _resolve(credentials)
+
+
+async def require_read_access(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
+    """Applied to every data route. Open only in DEMO_MODE; otherwise a valid token is required."""
+    if demo_mode():
+        return await _resolve(credentials)
+    return await get_current_user(credentials)
+
+
+async def require_governance(user=Depends(get_current_user)):
+    """Platform-wide governance actions: Programme Manager or Quality Lead."""
+    await require_any_global_role(user, GOVERNANCE_ROLES)
+    return user
+
+
+async def require_member(user: dict, project_id: str):
+    """User must hold at least one role on the project."""
+    if not await roles_for(user["id"], project_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You hold no role on this project.")
+    return user
 
 
 def public_user(user: dict) -> dict:

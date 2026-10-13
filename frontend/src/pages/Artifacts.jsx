@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import api, { API } from "../lib/api";
+import api, { API, downloadAuthed } from "../lib/api";
 import { useProject } from "../context/ProjectContext";
 import { PageHeader } from "../components/PageHeader";
 
@@ -55,9 +55,9 @@ export default function Artifacts() {
               <div className="font-semibold text-sm">{a.title}</div>
               <div className="font-mono text-[10px] text-gray-400">{a.created_at.slice(0, 19)} · {a.ledger_hash?.slice(0, 16)}…</div>
             </div>
-            <a href={`${API}/artifacts/${a.id}/download`} target="_blank" rel="noreferrer" data-testid={`download-artifact-btn-${a.id}`} className="shrink-0 text-xs font-bold uppercase border border-black px-3 py-1.5 hover:bg-black hover:text-[#FFE600] transition-colors duration-100">
+            <button onClick={() => downloadAuthed(`/artifacts/${a.id}/download`, `artifact_${a.id}.html`)} data-testid={`download-artifact-btn-${a.id}`} className="shrink-0 text-xs font-bold uppercase border border-black px-3 py-1.5 hover:bg-black hover:text-[#FFE600] transition-colors duration-100">
               Download
-            </a>
+            </button>
           </div>
         ))}
       </div>

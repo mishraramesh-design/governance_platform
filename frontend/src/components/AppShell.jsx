@@ -4,6 +4,7 @@ import { useAuth } from "../context/AuthContext";
 import { useProject } from "../context/ProjectContext";
 import api from "../lib/api";
 import { AdvisoryBadge } from "./StatusPill";
+import Login from "../pages/Login";
 
 const NAV = [
   { group: "Overview", items: [{ to: "/", label: "Dashboard", testId: "nav-dashboard" }] },
@@ -65,20 +66,24 @@ function Logo() {
 }
 
 export function AppShell({ children }) {
-  const { user, allRoles, isAdmin, role, setRole, signInAs, signOut, isAuthenticated } = useAuth();
+  const { user, allRoles, isAdmin, role, setRole, signInAs, signOut, isAuthenticated, demoMode, ready } = useAuth();
   const { projects, projectId, setProjectId, currentProject } = useProject();
   const location = useLocation();
   const [users, setUsers] = useState([]);
 
   useEffect(() => {
+    if (!ready || !(demoMode || isAuthenticated)) return;
     api.get("/auth/users").then((r) => setUsers(r.data)).catch(() => setUsers([]));
-  }, []);
+  }, [ready, demoMode, isAuthenticated]);
 
   const onSignInChange = (e) => {
     const uid = e.target.value;
     if (uid) signInAs(uid);
     else signOut();
   };
+
+  if (!ready) return <div className="min-h-screen flex items-center justify-center text-sm text-gray-400">Loading…</div>;
+  if (!demoMode && !isAuthenticated) return <Login />;
 
   return (
     <div className="min-h-screen bg-white flex">
@@ -137,6 +142,9 @@ export function AppShell({ children }) {
         >
           <div className="flex items-center gap-4 min-w-0">
             <AdvisoryBadge />
+            {demoMode && (
+              <span data-testid="demo-banner" className="text-[10px] font-bold uppercase tracking-wider bg-red-600 text-white px-2 py-1">Demo mode</span>
+            )}
             {currentProject && (
               <span className="hidden md:inline text-xs text-gray-400 truncate">
                 Project: <span className="text-black font-semibold">{currentProject.name}</span> · Tier {currentProject.integrity_tier}
@@ -158,6 +166,12 @@ export function AppShell({ children }) {
             </select>
             <div className="flex items-center gap-2 border-l border-gray-200 pl-3">
               <span className="text-[10px] uppercase tracking-wider text-gray-400 hidden sm:inline">Signed in</span>
+              {!demoMode ? (
+                <>
+                  <span data-testid="signed-in-name" className="text-xs font-semibold">{user?.name}</span>
+                  <button data-testid="sign-out-btn" onClick={signOut} className="text-xs underline text-gray-500 hover:text-black">Sign out</button>
+                </>
+              ) : (
               <select
                 data-testid="user-switcher"
                 value={user?.id || ""}
@@ -171,6 +185,7 @@ export function AppShell({ children }) {
                   </option>
                 ))}
               </select>
+              )}
             </div>
             {isAuthenticated && (
               <div className="flex items-center gap-2 border-l border-gray-200 pl-3">

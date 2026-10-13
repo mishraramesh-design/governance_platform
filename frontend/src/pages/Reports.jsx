@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import api, { API } from "../lib/api";
+import api, { API, downloadAuthed } from "../lib/api";
 import { useProject } from "../context/ProjectContext";
 import { PageHeader } from "../components/PageHeader";
 
@@ -28,15 +28,13 @@ export default function Reports() {
                 <p className="text-sm text-gray-600 mb-1">{r.narrative}</p>
                 <div className="font-mono text-[10px] text-gray-400 truncate">Ledger hash: {r.ledger_hash}</div>
               </div>
-              <a
+              <button
                 data-testid={`download-report-btn-${r.id}`}
-                href={`${API}/reports/${r.id}/download`}
-                target="_blank"
-                rel="noreferrer"
+                onClick={() => downloadAuthed(`/reports/${r.id}/download`, `report_${r.id}.html`).catch(() => toast.error("Download failed"))}
                 className="shrink-0 text-xs font-bold uppercase border border-black px-3 py-1.5 hover:bg-black hover:text-[#FFE600] transition-colors duration-100"
               >
                 Download HTML
-              </a>
+              </button>
             </div>
           </div>
         ))}

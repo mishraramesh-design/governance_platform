@@ -20,8 +20,14 @@ class DemoLoginRequest(BaseModel):
     user_id: str
 
 
+@router.get("/auth/config")
+async def auth_config():
+    """Public: tells the UI whether demo sign-in is available."""
+    return {"demo_mode": auth.demo_mode()}
+
+
 @router.get("/auth/users")
-async def list_users(project_id: Optional[str] = Query(None)):
+async def list_users(project_id: Optional[str] = Query(None), _u=Depends(auth.require_read_access)):
     users = await db.users.find({}, {"_id": 0}).sort("name", 1).to_list(200)
     for u in users:
         u["roles"] = await auth.roles_for(u["id"], project_id) if project_id else []
@@ -30,6 +36,8 @@ async def list_users(project_id: Optional[str] = Query(None)):
 
 @router.post("/auth/demo-login")
 async def demo_login(payload: DemoLoginRequest):
+    if not auth.demo_mode():
+        raise HTTPException(403, "Demo sign-in is disabled. Use an admin-issued token.")
     user = await db.users.find_one({"id": payload.user_id, "active": True}, {"_id": 0})
     if not user:
         raise HTTPException(404, "demo user not found or inactive")

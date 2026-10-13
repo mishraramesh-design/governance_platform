@@ -24,3 +24,16 @@ api.interceptors.request.use((config) => {
 });
 
 export default api;
+
+// Authenticated file download: plain <a href> cannot send the Authorization header.
+export async function downloadAuthed(path, filename) {
+  const res = await api.get(path, { responseType: "blob" });
+  const url = URL.createObjectURL(res.data);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename || "download";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}

@@ -1,10 +1,11 @@
 import logging
 
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, Depends
 from starlette.middleware.cors import CORSMiddleware
 import os
 
 from database import db
+import auth as auth_mod
 import seed_data
 from routers import catalog, projects, events, reports, assurance, dashboard, harness, mlops
 from routers import auth as auth_routes, admin as admin_routes, routing as routing_routes
@@ -18,24 +19,24 @@ async def root():
     return {"message": "SDLC Governance & Assurance Platform API - Observe, Collect Evidence, Advise."}
 
 
-api_router.include_router(catalog.router)
-api_router.include_router(projects.router)
-api_router.include_router(events.router)
-api_router.include_router(reports.router)
-api_router.include_router(assurance.router)
-api_router.include_router(dashboard.router)
-api_router.include_router(harness.router)
-api_router.include_router(mlops.router)
+api_router.include_router(catalog.router, dependencies=[Depends(auth_mod.require_read_access)])
+api_router.include_router(projects.router, dependencies=[Depends(auth_mod.require_read_access)])
+api_router.include_router(events.router, dependencies=[Depends(auth_mod.require_read_access)])
+api_router.include_router(reports.router, dependencies=[Depends(auth_mod.require_read_access)])
+api_router.include_router(assurance.router, dependencies=[Depends(auth_mod.require_read_access)])
+api_router.include_router(dashboard.router, dependencies=[Depends(auth_mod.require_read_access)])
+api_router.include_router(harness.router, dependencies=[Depends(auth_mod.require_read_access)])
+api_router.include_router(mlops.router, dependencies=[Depends(auth_mod.require_read_access)])
 api_router.include_router(auth_routes.router)
 api_router.include_router(admin_routes.router)
-api_router.include_router(routing_routes.router)
+api_router.include_router(routing_routes.router, dependencies=[Depends(auth_mod.require_read_access)])
 
 app.include_router(api_router)
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=[o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()] or ["http://localhost:3000"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

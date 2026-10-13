@@ -8,13 +8,14 @@ meets the threshold. Every registry change and promotion is appended to the ledg
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 
 from database import db
 import agent_profiles
 import gateway
 import evaluator
 import ledger as ledger_mod
+import auth
 
 router = APIRouter(prefix="/mlops")
 
@@ -86,7 +87,7 @@ async def registry():
 
 
 @router.post("/registry/{entry_id}/evaluate")
-async def evaluate(entry_id: str):
+async def evaluate(entry_id: str, _gov=Depends(auth.require_governance)):
     entry = await db.harness_registry.find_one({"id": entry_id}, {"_id": 0})
     if not entry:
         raise HTTPException(404, "registry entry not found")
@@ -103,7 +104,7 @@ async def evaluate(entry_id: str):
 
 
 @router.post("/registry/{entry_id}/promote")
-async def promote(entry_id: str):
+async def promote(entry_id: str, _gov=Depends(auth.require_governance)):
     entry = await db.harness_registry.find_one({"id": entry_id}, {"_id": 0})
     if not entry:
         raise HTTPException(404, "registry entry not found")
@@ -126,7 +127,7 @@ async def promote(entry_id: str):
 
 
 @router.post("/registry/{entry_id}/shadow")
-async def shadow(entry_id: str):
+async def shadow(entry_id: str, _gov=Depends(auth.require_governance)):
     entry = await db.harness_registry.find_one({"id": entry_id}, {"_id": 0})
     if not entry:
         raise HTTPException(404, "registry entry not found")
@@ -136,7 +137,7 @@ async def shadow(entry_id: str):
 
 
 @router.post("/registry/{entry_id}/shadow-compare")
-async def shadow_compare(entry_id: str):
+async def shadow_compare(entry_id: str, _gov=Depends(auth.require_governance)):
     """Run the shadow candidate alongside the promoted baseline and compare F1."""
     entry = await db.harness_registry.find_one({"id": entry_id}, {"_id": 0})
     if not entry:

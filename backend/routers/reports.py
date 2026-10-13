@@ -1,13 +1,14 @@
 from uuid import uuid4
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from fastapi.responses import HTMLResponse
 
 from database import db
 from models import ArtifactGenerateRequest
 import engine
 import ledger as ledger_mod
+import auth
 
 router = APIRouter()
 
@@ -71,10 +72,11 @@ ARTIFACT_TITLES = {
 
 
 @router.post("/artifacts/generate")
-async def generate_artifact(payload: ArtifactGenerateRequest):
+async def generate_artifact(payload: ArtifactGenerateRequest, user=Depends(auth.get_current_user)):
     project = await db.projects.find_one({"id": payload.project_id}, {"_id": 0})
     if not project:
         raise HTTPException(404, "project not found")
+    await auth.require_member(user, payload.project_id)
     artifact_type = payload.artifact_type
     if artifact_type not in ARTIFACT_TITLES:
         raise HTTPException(400, "unknown artifact_type")

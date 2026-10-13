@@ -270,10 +270,11 @@ def _audit_profile(audit):
 
 
 @router.post("/repo-audit/simulate")
-async def simulate_repo_audit(payload: RepoAuditRequest):
+async def simulate_repo_audit(payload: RepoAuditRequest, user=Depends(auth.get_current_user)):
     project = await db.projects.find_one({"id": payload.project_id}, {"_id": 0})
     if not project:
         raise HTTPException(404, "project not found")
+    await auth.require_member(user, payload.project_id)
 
     digest = hashlib.sha256(payload.github_url.encode()).hexdigest()
     seed_val = int(digest[:8], 16)
@@ -295,7 +296,8 @@ async def simulate_repo_audit(payload: RepoAuditRequest):
 
 
 @router.post("/runtime/analyze")
-async def analyze_runtime_log(payload: RuntimeAnalyzeRequest):
+async def analyze_runtime_log(payload: RuntimeAnalyzeRequest, user=Depends(auth.get_current_user)):
+    await auth.require_member(user, payload.project_id)
     project = await db.projects.find_one({"id": payload.project_id}, {"_id": 0})
     if not project:
         raise HTTPException(404, "project not found")

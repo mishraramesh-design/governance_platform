@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect } from "react";
 import api from "../lib/api";
+import { useAuth } from "./AuthContext";
 
 const ProjectContext = createContext(null);
 
@@ -9,15 +10,18 @@ export function ProjectProvider({ children }) {
 
   const refreshProjects = () => api.get("/projects").then((res) => { setProjects(res.data); return res.data; });
 
+  const { ready, demoMode, isAuthenticated } = useAuth();
+
   useEffect(() => {
+    if (!ready || !(demoMode || isAuthenticated)) { setProjects([]); return; }
     api.get("/projects").then((res) => {
       setProjects(res.data);
       if (!projectId && res.data.length) {
         setProjectId(res.data[0].id);
       }
-    });
+    }).catch(() => setProjects([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [ready, demoMode, isAuthenticated]);
 
   useEffect(() => {
     if (projectId) localStorage.setItem("gov_project_id", projectId);

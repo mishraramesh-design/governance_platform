@@ -107,7 +107,7 @@ async def get_config():
 
 
 @router.put("/config")
-async def put_config(body: ConfigUpdate):
+async def put_config(body: ConfigUpdate, _gov=Depends(auth.require_governance)):
     current = await gateway.get_config(db)
     incoming = dict(body.capability_profiles or {})
     result = {}
@@ -148,7 +148,7 @@ async def put_config(body: ConfigUpdate):
 
 
 @router.post("/sandbox")
-async def sandbox(body: SandboxRun):
+async def sandbox(body: SandboxRun, _user=Depends(auth.get_current_user)):
     if body.level not in (1, 2):
         raise HTTPException(400, "level must be 1 or 2")
     return await gateway.complete_agent(body.agent_id, "sandbox_assessment", body.masked_input, body.level, db=db, tier=body.tier)
