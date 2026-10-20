@@ -12,6 +12,8 @@ const stateStyle = {
   authorization_required: "text-amber-900 bg-amber-50",
   blocked_missing_input: "text-gray-600 bg-gray-100",
   planned_requires_repository_test_execution: "text-blue-800 bg-blue-50",
+  drafts_require_review: "text-purple-900 bg-purple-50",
+  signals_detected_review_required: "text-amber-900 bg-amber-50",
   not_executed_no_scanner_adapter: "text-amber-900 bg-amber-50",
   not_executed_requires_test_environment_and_limits: "text-amber-900 bg-amber-50",
   advisory_readiness_only: "text-purple-900 bg-purple-50",
@@ -20,6 +22,17 @@ const stateStyle = {
 export default function Studio() {
   const [runs, setRuns] = useState([]);
   const [result, setResult] = useState(null);
+  const [webScanMode, setWebScanMode] = useState("passive");
+  const [activeScanStagingConfirmed, setActiveScanStagingConfirmed] = useState(false);
+  const [excludedPaths, setExcludedPaths] = useState("");
+  const [framework, setFramework] = useState("playwright");
+  const [frameworkAuthorized, setFrameworkAuthorized] = useState(false);
+  const [openapiUrl, setOpenapiUrl] = useState("");
+  const [maxExamples, setMaxExamples] = useState(10);
+  const [k6Vus, setK6Vus] = useState(2);
+  const [k6Duration, setK6Duration] = useState(15);
+  const [k6P95, setK6P95] = useState(1000);
+  const [k6ErrorRate, setK6ErrorRate] = useState(1);
   const [form, setForm] = useState({
     name: "", github_url: "", target_url: "", authorization_confirmed: false,
     authorization_owner: "", authorization_reference: "", authorization_scope: "",
@@ -67,23 +80,42 @@ export default function Studio() {
   });
 
   const runWebSecurityScan = useMutation({
-    mutationFn: () => api.post(`/studio/runs/${result.id}/web-security-scan`),
+    mutationFn: () => api.post("/studio/runs/" + result.id + "/web-security-scan", {
+      mode: webScanMode,
+      active_scan_staging_confirmed: webScanMode === "active" && activeScanStagingConfirmed,
+      excluded_paths: excludedPaths.split(String.fromCharCode(10)).map((path) => path.trim()).filter(Boolean),
+    }),
     onSuccess: async () => {
       const response = await api.get(`/studio/runs/${result.id}`);
       setResult(response.data);
       refreshRuns();
-      toast.success("OWASP ZAP passive security assessment queued");
+      toast.success((webScanMode === "active" ? "Active" : "Passive") + " web security assessment queued");
     },
     onError: (error) => toast.error(error?.response?.data?.detail || "Could not start web security assessment"),
   });
 
+  const runFrameworkAssessment = useMutation({
+    mutationFn: () => api.post(`/studio/runs/${result.id}/framework-assessment`, {
+      framework, staging_authorized: frameworkAuthorized,
+      ...(framework === "schemathesis" ? { openapi_url: openapiUrl, max_examples: Number(maxExamples) } : {}),
+      ...(framework === "k6" ? { virtual_users: Number(k6Vus), duration_seconds: Number(k6Duration), max_p95_ms: Number(k6P95), max_error_rate_percent: Number(k6ErrorRate) } : {}),
+    }),
+    onSuccess: async () => {
+      const response = await api.get(`/studio/runs/${result.id}`);
+      setResult(response.data);
+      refreshRuns();
+      toast.success(`${framework} assessment queued`);
+    },
+    onError: (error) => toast.error(error?.response?.data?.detail || "Could not start framework assessment"),
+  });
+
   useEffect(() => {
-    if (!result?.id || !["queued", "running"].includes(result.web_security_scan?.status)) return undefined;
+    if (!result?.id || (!["queued", "running"].includes(result.web_security_scan?.status) && !["queued", "running"].includes(result.framework_assessment?.status))) return undefined;
     const timer = setInterval(() => {
       api.get(`/studio/runs/${result.id}`).then((response) => setResult(response.data)).catch(() => {});
     }, 3000);
     return () => clearInterval(timer);
-  }, [result?.id, result?.web_security_scan?.status]);
+  }, [result?.id, result?.web_security_scan?.status, result?.framework_assessment?.status]);
 
   const update = (key) => (event) => setForm((current) => ({
     ...current,
@@ -151,9 +183,11 @@ export default function Studio() {
           <div><div className="text-[10px] uppercase tracking-[0.2em] text-gray-300">Plan recorded · {result.id.slice(0, 8)}</div><h2 className="font-bold">{result.name}</h2></div>
           <span className="text-[10px] uppercase border border-[#FFE600] text-[#FFE600] px-2 py-1">{result.status.replaceAll("_", " ")} · evidence ledgered</span>
         </div>
-        <div className="p-4 grid md:grid-cols-3 gap-3 text-xs">
+        <div className="p-4 grid md:grid-cols-2 xl:grid-cols-5 gap-3 text-xs">
           <div className="border border-gray-200 p-3"><div className="text-[10px] uppercase text-gray-400">Requirement candidates</div><strong>{result.requirements_candidate_count}</strong></div>
           <div className="border border-gray-200 p-3"><div className="text-[10px] uppercase text-gray-400">Runtime errors / 5xx</div><strong>{result.runtime_summary ? `${result.runtime_summary.error_lines} / ${result.runtime_summary.http_5xx_lines}` : "No logs supplied"}</strong></div>
+          <div className="border border-gray-200 p-3"><div className="text-[10px] uppercase text-gray-400">Known sensitive log signals</div><strong>{result.runtime_summary ? `${result.runtime_summary.secret_signal_count ?? 0} secret · ${result.runtime_summary.pii_signal_count ?? 0} PII` : "No logs supplied"}</strong><div className="mt-1 text-[10px] text-gray-500">{result.runtime_summary?.sensitive_data_review?.replaceAll("_", " ") || "Raw logs are not retained"}</div></div>
+          <div className="border border-gray-200 p-3"><div className="text-[10px] uppercase text-gray-400">Test outlines · not executed</div><strong>{result.test_case_draft_count ?? 0}</strong></div>
           <div className="border border-gray-200 p-3"><div className="text-[10px] uppercase text-gray-400">Target contact</div><strong>{result.web_security_scan?.status === "completed" ? "Contacted by approved baseline" : ["queued", "running"].includes(result.web_security_scan?.status) ? "Baseline in progress" : result.web_security_scan?.status === "failed" ? "Contact status uncertain" : "Not contacted"}</strong></div>
         </div>
         <div className="px-4 pb-4 space-y-2">
@@ -164,21 +198,57 @@ export default function Studio() {
             <span className={`text-[9px] uppercase font-bold px-2 py-1 ${stateStyle[step.state] || "bg-gray-100"}`}>{step.state.replaceAll("_", " ")}</span>
           </div>)}
         </div>
+        {result.test_case_drafts?.length > 0 && <section className="px-4 pb-4" data-testid="studio-test-case-drafts">
+          <h3 className="text-[10px] uppercase tracking-[0.2em] font-bold text-gray-500 mb-2">Trace-linked test design drafts</h3>
+          <p className="text-[11px] text-gray-600 mb-2">These deterministic outlines link to extracted requirement candidates. They are not executable tests or pass/fail evidence; approve the setup and measurable assertion before implementation.</p>
+          <div className="space-y-2">{result.test_case_drafts.map((testCase) => <article key={testCase.id} className="border border-gray-200 p-3 text-xs">
+            <div className="flex flex-wrap items-center gap-2"><strong className="font-mono">{testCase.id}</strong><span className="uppercase text-[9px] bg-gray-100 px-2 py-1">{testCase.category}</span><span className="text-gray-500">Traces to {testCase.source_requirement_id} · line {testCase.source_line}</span><span className="ml-auto text-[9px] uppercase text-purple-800">Draft · review required</span></div>
+            <div className="mt-2 font-semibold">{testCase.title}</div><p className="mt-1">Requirement: {testCase.objective}</p>
+            <p className="mt-1 text-gray-600">Expected: {testCase.expected_result}</p>
+            <p className="mt-1 text-[10px] text-gray-500">Suggested runner: {testCase.recommended_runner}. {testCase.review_note}</p>
+          </article>)}</div>
+        </section>}
+        {result.framework_catalog?.length > 0 && <section className="px-4 pb-4" data-testid="studio-framework-catalog">
+          <h3 className="text-[10px] uppercase tracking-[0.2em] font-bold text-gray-500 mb-2">Framework support and runtime availability</h3>
+          <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-2">{result.framework_catalog.map((framework) => <article key={framework.id} className="border border-gray-200 p-3 text-xs">
+            <div className="flex justify-between gap-2"><strong>{framework.name}</strong><span className={`text-[9px] uppercase ${framework.status === "available" ? "text-green-800" : "text-amber-800"}`}>{framework.status.replaceAll("_", " ")}</span></div>
+            <div className="text-[10px] text-gray-500 mt-1">{framework.stage.replaceAll("_", " ")} · {framework.execution_kind.replaceAll("_", " ")} · {framework.license}</div>
+            <p className="mt-2 text-gray-700">{framework.note}</p>
+          </article>)}</div>
+        </section>}
         {result.source?.target_url && <section className="mx-4 mb-4 border border-blue-300 bg-blue-50 p-4" data-testid="studio-web-security-scan">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h3 className="text-xs font-bold uppercase tracking-wider">Unauthenticated web security baseline</h3>
-              <p className="text-[11px] text-gray-700 mt-1">OWASP ZAP crawls only the approved host and URL path, then applies passive rules. No exploit payloads, credentials, or load testing.</p>
+              <h3 className="text-xs font-bold uppercase tracking-wider">Governed web security assessment</h3>
+              <p className="text-[11px] text-gray-700 mt-1">OWASP ZAP produces deterministic findings. The configured Security &amp; Privacy Agent prioritizes them; AI never sends requests to the target.</p>
             </div>
-            <button type="button" onClick={() => runWebSecurityScan.mutate()} disabled={runWebSecurityScan.isPending || ["queued", "running"].includes(result.web_security_scan?.status)} className="bg-black text-[#FFE600] px-3 py-2 text-xs font-bold disabled:opacity-50">
-              {runWebSecurityScan.isPending ? "Queueing…" : result.web_security_scan?.status === "running" ? "Scan running…" : result.web_security_scan?.status === "queued" ? "Scan queued…" : result.web_security_scan?.status === "completed" ? "Run baseline again" : "Run OWASP ZAP baseline"}
-            </button>
           </div>
+          <label className="mt-3 block text-xs font-bold">Scan mode
+            <select value={webScanMode} onChange={(event) => { setWebScanMode(event.target.value); setActiveScanStagingConfirmed(false); }} className="mt-1 block w-full border border-gray-300 bg-white px-3 py-2 text-xs">
+              <option value="passive">Passive baseline (safe default)</option>
+              <option value="active">Active assessment (attack requests; staging/test only)</option>
+            </select>
+          </label>
+          <label className="mt-3 block text-xs font-bold">Excluded URL paths <span className="font-normal text-gray-500">(one same-host path per line)</span>
+            <textarea value={excludedPaths} onChange={(event) => setExcludedPaths(event.target.value)} rows={3} maxLength={5000} className="mt-1 block w-full border border-gray-300 px-3 py-2 font-mono text-xs font-normal" placeholder={"/logout\n/admin/maintenance"} />
+          </label>
+          {webScanMode === "active" && <label className="mt-3 flex items-start gap-2 border border-amber-400 bg-amber-50 p-3 text-xs font-normal text-amber-950">
+            <input type="checkbox" checked={activeScanStagingConfirmed} onChange={(event) => setActiveScanStagingConfirmed(event.target.checked)} className="mt-0.5" />
+            <span>I confirm the system owner explicitly approved low-strength active testing of this exact staging/test target during this assessment window, and a restore/incident contact is available. I understand active checks can affect application state or availability.</span>
+          </label>}
+          <button type="button" onClick={() => runWebSecurityScan.mutate()} disabled={runWebSecurityScan.isPending || ["queued", "running"].includes(result.web_security_scan?.status) || (webScanMode === "active" && !activeScanStagingConfirmed)} className="mt-3 bg-black text-[#FFE600] px-3 py-2 text-xs font-bold disabled:opacity-50">
+            {runWebSecurityScan.isPending ? "Queueing…" : result.web_security_scan?.status === "running" ? "Assessment running…" : result.web_security_scan?.status === "queued" ? "Assessment queued…" : result.web_security_scan?.status === "completed" ? "Run assessment again" : "Run " + webScanMode + " assessment"}
+          </button>
           {result.web_security_scan && <div className="mt-3 border-t border-blue-200 pt-3">
-            <div className="text-xs font-bold">{result.web_security_scan.status.replaceAll("_", " ")}{result.web_security_scan.status === "completed" ? ` · ${result.web_security_scan.finding_count} findings · OWASP ZAP ${result.web_security_scan.scanner?.version} · ${result.web_security_scan.scanner?.coverage_status} coverage` : ""}</div>
+            <div className="text-xs font-bold">{result.web_security_scan.status.replaceAll("_", " ")}{result.web_security_scan.status === "completed" ? ` · ${result.web_security_scan.mode.replaceAll("_", " ")} · ${result.web_security_scan.finding_count} findings · ${result.web_security_scan.scanner?.name} ${result.web_security_scan.scanner?.version} · ${result.web_security_scan.scanner?.coverage_status} coverage` : ""}</div>
             {result.web_security_scan.error && <p className="text-xs text-red-800 mt-1">{result.web_security_scan.error}</p>}
             {result.web_security_scan.status === "completed" && <>
-              {!result.web_security_scan.findings?.length && <p className="text-xs text-gray-700 mt-2">No passive alerts were returned for this scope. This does not establish that the site is secure.</p>}
+              {result.web_security_scan.ai_advisory && <article className="mt-3 border border-purple-200 bg-purple-50 p-3 text-xs" data-testid="studio-security-ai-advisory">
+                <div className="font-bold">AI-assisted triage · {result.web_security_scan.ai_advisory.model_used || "deterministic fallback"}</div>
+                <p className="mt-2 whitespace-pre-wrap">{result.web_security_scan.ai_advisory.text}</p>
+                <p className="mt-2 text-[10px] text-purple-900">{result.web_security_scan.ai_advisory.note}</p>
+              </article>}
+              {!result.web_security_scan.findings?.length && <p className="text-xs text-gray-700 mt-2">No alerts were returned within this scan's coverage. This does not establish that the site is secure.</p>}
               <div className="mt-2 space-y-2">
                 {result.web_security_scan.findings?.map((finding, index) => <article key={`${finding.scanner_id}-${index}`} className="border border-blue-200 bg-white p-3 text-xs">
                   <div className="flex flex-wrap justify-between gap-2"><strong>{finding.name}</strong><span className="uppercase font-bold">{finding.risk} · {finding.confidence}</span></div>
@@ -186,12 +256,42 @@ export default function Studio() {
                   {finding.description && <p className="mt-2 whitespace-pre-wrap">{finding.description}</p>}
                   {finding.evidence && <p className="mt-1 text-gray-600 break-words">Evidence: {finding.evidence}</p>}
                   {finding.remediation && <p className="mt-2"><strong>Recommended fix:</strong> {finding.remediation}</p>}
-                  <div className="mt-2 text-[10px] text-gray-500">ZAP rule {finding.scanner_id}{finding.cwe_id ? ` · CWE ${finding.cwe_id}` : ""}{finding.wasc_id ? ` · WASC ${finding.wasc_id}` : ""}</div>
+                  <div className="mt-2 text-[10px] text-gray-500">{result.web_security_scan.scanner?.name} rule {finding.scanner_id}{finding.cwe_id ? ` · CWE ${finding.cwe_id}` : ""}{finding.wasc_id ? ` · WASC ${finding.wasc_id}` : ""}</div>
                 </article>)}
               </div>
               <div className="mt-3 text-[10px] text-gray-600">{result.web_security_scan.limitations?.join(" ")}</div>
               {result.web_security_scan.ledger && <div className="mt-2 font-mono text-[10px] text-gray-500">Security scan ledger {result.web_security_scan.ledger.seq} · {result.web_security_scan.ledger.hash}</div>}
             </>}
+          </div>}
+        </section>}
+        {result.source?.target_url && <section className="mx-4 mb-4 border border-purple-300 bg-purple-50 p-4" data-testid="studio-framework-assessment">
+          <h3 className="text-xs font-bold uppercase tracking-wider">Functional, API and performance frameworks</h3>
+          <p className="text-[11px] text-gray-700 mt-1">Runs a single bounded framework against the exact authorized HTTPS target. Schemathesis generates API cases with Hypothesis. k6 is GET-only, paced, capped at 3 virtual users and 30 seconds. No response bodies or raw tool output are retained.</p>
+          <label className="mt-3 block text-xs font-bold">Framework
+            <select value={framework} onChange={(event) => { setFramework(event.target.value); setFrameworkAuthorized(false); }} className="mt-1 block w-full border border-gray-300 bg-white px-3 py-2 text-xs">
+              <option value="playwright">Playwright browser smoke</option><option value="schemathesis">Schemathesis API contract + Hypothesis cases</option><option value="k6">k6 bounded load smoke (GET only)</option>
+            </select>
+          </label>
+          {framework === "schemathesis" && <div className="mt-2 grid md:grid-cols-2 gap-2">
+            <label className="block text-xs font-bold">OpenAPI schema URL<input type="url" required value={openapiUrl} onChange={(event) => setOpenapiUrl(event.target.value)} className="mt-1 w-full border border-gray-300 bg-white px-3 py-2 text-xs font-normal" placeholder="https://staging.example.com/openapi.json" /></label>
+            <label className="block text-xs font-bold">Maximum generated examples<input type="number" min="1" max="25" value={maxExamples} onChange={(event) => setMaxExamples(event.target.value)} className="mt-1 block w-full border border-gray-300 bg-white px-3 py-2 text-xs font-normal" /></label>
+          </div>}
+          {framework === "k6" && <div className="mt-2 grid md:grid-cols-2 gap-2">
+            <label className="block text-xs font-bold">Virtual users (1–3)<input type="number" min="1" max="3" value={k6Vus} onChange={(event) => setK6Vus(event.target.value)} className="mt-1 block w-full border border-gray-300 bg-white px-3 py-2 text-xs font-normal" /></label>
+            <label className="block text-xs font-bold">Duration seconds (5–30)<input type="number" min="5" max="30" value={k6Duration} onChange={(event) => setK6Duration(event.target.value)} className="mt-1 block w-full border border-gray-300 bg-white px-3 py-2 text-xs font-normal" /></label>
+            <label className="block text-xs font-bold">Maximum p95 latency (100–10,000 ms)<input type="number" min="100" max="10000" value={k6P95} onChange={(event) => setK6P95(event.target.value)} className="mt-1 block w-full border border-gray-300 bg-white px-3 py-2 text-xs font-normal" /></label>
+            <label className="block text-xs font-bold">Maximum failed request rate (0–10%)<input type="number" min="0" max="10" step="0.1" value={k6ErrorRate} onChange={(event) => setK6ErrorRate(event.target.value)} className="mt-1 block w-full border border-gray-300 bg-white px-3 py-2 text-xs font-normal" /></label>
+          </div>}
+          <label className="mt-3 flex items-start gap-2 border border-amber-400 bg-amber-50 p-3 text-xs text-amber-950"><input type="checkbox" checked={frameworkAuthorized} onChange={(event) => setFrameworkAuthorized(event.target.checked)} className="mt-0.5" /><span>I confirm owner-approved testing of this exact staging/test target in the recorded scope and time window. I understand Schemathesis may call API methods described in the schema; I have excluded production data and provided a safe test environment.</span></label>
+          <button type="button" onClick={() => runFrameworkAssessment.mutate()} disabled={runFrameworkAssessment.isPending || !frameworkAuthorized || (framework === "schemathesis" && !openapiUrl) || ["queued", "running"].includes(result.framework_assessment?.status)} className="mt-3 bg-black text-white px-3 py-2 text-xs font-bold disabled:opacity-50">{runFrameworkAssessment.isPending ? "Queueing…" : `Run ${framework} assessment`}</button>
+          {result.framework_assessment && <div className="mt-3 border-t border-purple-200 pt-3 text-xs"><strong>{result.framework_assessment.status.replaceAll("_", " ")} · {result.framework_assessment.framework}</strong>
+            {result.framework_assessment.http_statuses?.length > 0 && <p>HTTP status: {result.framework_assessment.http_statuses.join(", ")} · browser exceptions: {result.framework_assessment.page_error_count} · requests observed: {result.framework_assessment.requests_observed}</p>}
+            {result.framework_assessment.metrics && <pre className="mt-2 whitespace-pre-wrap text-[10px]">{JSON.stringify(result.framework_assessment.metrics, null, 2)}</pre>}
+            {result.framework_assessment.hypothesis && <p className="mt-1">{result.framework_assessment.hypothesis}</p>}
+            {result.framework_assessment.error && <p className="text-red-800">{result.framework_assessment.error}</p>}
+            {result.framework_assessment.output_sha256 && <p className="font-mono text-[10px]">Output digest: {result.framework_assessment.output_sha256}</p>}
+            {result.framework_assessment.limitations && <p className="mt-1 text-[10px] text-gray-600">{result.framework_assessment.limitations.join(" ")}</p>}
+            {result.framework_assessment.ledger && <p className="font-mono text-[10px]">Ledger {result.framework_assessment.ledger.seq} · {result.framework_assessment.ledger.hash}</p>}
           </div>}
         </section>}
         {result.requirements?.length > 0 && <div className="px-4 pb-4"><h3 className="text-[10px] uppercase tracking-[0.2em] font-bold text-gray-500 mb-2">Review candidate requirements</h3><div className="max-h-64 overflow-y-auto border border-gray-200">{result.requirements.map((req) => <div key={req.id} className="border-b border-gray-100 p-2 text-xs"><span className="font-mono font-bold mr-2">{req.id}</span>{req.text}<div className="text-[10px] text-gray-400">Source line {req.source_line} · {req.trace_status}</div></div>)}</div></div>}
@@ -203,6 +303,14 @@ export default function Studio() {
         {result.repository_audit && <div className="mx-4 mb-4 border border-green-300 bg-green-50 p-3" data-testid="studio-repository-audit-result">
           <div className="text-[10px] uppercase tracking-[0.2em] font-bold text-green-900">Repository scan completed · {result.repository_audit.project_name}</div>
           <div className="text-xs text-green-900 mt-1">{result.repository_audit.finding_summary?.total ?? 0} findings · {result.repository_audit.profile?.code_files_scanned ?? 0} code files · runtime URL was not scanned</div>
+          <div className="mt-3 space-y-1">{result.repository_audit.tool_assessments?.map((tool) => <div key={tool.tool_id} className="flex flex-wrap justify-between gap-2 border-t border-green-200 pt-1 text-[10px]">
+            <span className="font-semibold">{tool.name}</span><span>{tool.status.replaceAll("_", " ")}{tool.finding_count != null ? ` · ${tool.finding_count} findings` : ""}{tool.exit_code != null ? ` · exit ${tool.exit_code}` : ""}</span>
+            {tool.required_prerequisite && <span className="basis-full text-gray-600">Needs: {tool.required_prerequisite}</span>}
+            {tool.output_sha256 && <span className="basis-full font-mono text-gray-500">Evidence digest: {tool.output_sha256}</span>}
+            {tool.findings?.slice(0, 25).map((finding, findingIndex) => <span key={`${finding.rule_id}-${findingIndex}`} className="basis-full pl-2 text-gray-700">
+              {finding.severity || "finding"} · {finding.rule_id || "rule"}{finding.path ? ` · ${finding.path}` : ""}{finding.line ? `:${finding.line}` : ""}{finding.summary ? ` · ${finding.summary}` : ""}
+            </span>)}
+          </div>)}</div>
           <div className="text-[10px] text-gray-600 mt-1">Project {result.repository_audit.project_id} · reports and gates linked in the main evidence views.</div>
           <div className="text-[10px] text-gray-500 font-mono mt-1">Source audit ledger {result.repository_audit.ledger?.seq} · {result.repository_audit.ledger?.hash}</div>
         </div>}

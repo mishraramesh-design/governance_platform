@@ -1,18 +1,15 @@
-"""Bounded OWASP ZAP passive baseline integration for Governance Studio.
-
-The scanner is intentionally limited to an unauthenticated crawl plus passive
-rules. It does not run ZAP's active scanner or load/performance tests.
-"""
+"""Bounded OWASP ZAP web assessment integration for Governance Studio."""
 import asyncio
 import ipaddress
 import os
 import re
 import socket
 from datetime import datetime, timezone
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import httpx
 from detectors import mask_sensitive_text
+from scan_scope import build_zap_context_regexes
 
 
 MAX_SPIDER_SECONDS = 120
@@ -20,6 +17,7 @@ MAX_SPIDER_DEPTH = 5
 MAX_PASSIVE_QUEUE_SECONDS = 120
 MAX_SPIDER_CHILDREN = 50
 MAX_ALERTS = 500
+MAX_ACTIVE_SCAN_SECONDS = 180
 
 
 async def validate_public_target(target_url: str):
@@ -35,6 +33,11 @@ async def validate_public_target(target_url: str):
         raise ValueError("Target URLs cannot contain credentials or fragments.")
     if parsed.query:
         raise ValueError("Target URLs cannot contain query parameters; provide the public page URL without tokens or personal data.")
+    decoded_path = parsed.path
+    for _ in range(3):
+        decoded_path = unquote(decoded_path)
+    if "\\" in decoded_path or any(segment in (".", "..") for segment in decoded_path.split("/")):
+        raise ValueError("Target URL paths cannot contain dot segments or backslashes.")
     hostname = parsed.hostname.rstrip(".").lower()
     if hostname in {"localhost", "localhost.localdomain"} or "." not in hostname:
         raise ValueError("Target must be a public fully qualified hostname.")
@@ -102,19 +105,33 @@ def _masked(value, limit):
     return mask_sensitive_text(text)[0]
 
 
-async def execute_zap_baseline(target_url: str, run_id: str, window_expires_at: datetime):
-    """Run a time- and page-bounded spider and passive scan in ZAP."""
+def validate_scan_exclusions(target_url: str, excluded_paths=None):
+    parsed = urlsplit(target_url)
+    normalized_root = parsed.path.rstrip("/") or "/"
+    exclusions = sorted(set(excluded_paths or []))
+    for excluded_path in exclusions:
+        excluded_root = excluded_path.rstrip("/") or "/"
+        if excluded_root == "/" or normalized_root == excluded_root or normalized_root.startswith(excluded_root + "/"):
+            raise ValueError("An excluded path would exclude the entire selected scan scope.")
+    return exclusions
+
+
+async def execute_zap_baseline(target_url: str, run_id: str, window_expires_at: datetime, active=False, excluded_paths=None):
+    """Run a bounded spider/passive scan and optionally a low-strength active scan."""
     if window_expires_at.tzinfo is None:
         window_expires_at = window_expires_at.replace(tzinfo=timezone.utc)
     if datetime.now(timezone.utc) >= window_expires_at:
         raise AuthorizationWindowExpired("authorization_window_expired")
     parsed = await validate_public_target(target_url)
+    exclusions = validate_scan_exclusions(target_url, excluded_paths)
     if datetime.now(timezone.utc) >= window_expires_at:
         raise AuthorizationWindowExpired("authorization_window_expired")
     zap = ZapApi()
     context_name = f"studio-{re.sub('[^a-zA-Z0-9_-]', '', run_id)[:32]}"
     scan_id = None
+    active_scan_id = None
     spider_completed = False
+    active_scan_completed = False
     try:
         version_data = await zap.get("core/view/version", deadline=window_expires_at)
         version = version_data.get("version", "unknown")
@@ -124,16 +141,13 @@ async def execute_zap_baseline(target_url: str, run_id: str, window_expires_at: 
         await zap.get("spider/action/setOptionMaxDuration", deadline=window_expires_at, Integer=2)
         await zap.get("spider/action/setOptionMaxDepth", deadline=window_expires_at, Integer=MAX_SPIDER_DEPTH)
         await zap.get("spider/action/setOptionMaxChildren", deadline=window_expires_at, Integer=MAX_SPIDER_CHILDREN)
-        await zap.get("context/action/newContext", deadline=window_expires_at, contextName=context_name)
-        escaped_host = re.escape(parsed.hostname)
-        port = f":{parsed.port}" if parsed.port and parsed.port != 443 else ""
-        root_path = parsed.path.rstrip("/") or "/"
-        escaped_path = re.escape(root_path.rstrip("/"))
-        if root_path == "/":
-            scope_regex = rf"^https://{escaped_host}{port}(?:/.*)?$"
-        else:
-            scope_regex = rf"^https://{escaped_host}{port}{escaped_path}(?:/.*)?(?:\?.*)?$"
+        context_result = await zap.get("context/action/newContext", deadline=window_expires_at, contextName=context_name)
+        context_id = str(context_result.get("contextId", ""))
+        scope_regex, excluded_regexes = build_zap_context_regexes(parsed, exclusions)
         await zap.get("context/action/includeInContext", deadline=window_expires_at, contextName=context_name, regex=scope_regex)
+        for excluded_regex in excluded_regexes:
+            await zap.get("context/action/excludeFromContext", deadline=window_expires_at,
+                          contextName=context_name, regex=excluded_regex)
         # Initial target is the exact URL supplied. Crawling is restricted to
         # the exact host and target path subtree through the ZAP context.
         scan = await zap.get("spider/action/scan", deadline=window_expires_at, url=target_url, contextName=context_name,
@@ -163,6 +177,32 @@ async def execute_zap_baseline(target_url: str, run_id: str, window_expires_at: 
 
         if datetime.now(timezone.utc) >= window_expires_at:
             raise AuthorizationWindowExpired("authorization_window_expired")
+
+        if active:
+            # ZAP active scanning sends attack requests. Keep it opt-in, low
+            # strength, single-threaded, exact-context scoped, and time bounded.
+            await zap.get("ascan/action/setOptionAttackStrength", deadline=window_expires_at, String="LOW")
+            await zap.get("ascan/action/setOptionMaxScanDurationInMins", deadline=window_expires_at, Integer=3)
+            await zap.get("ascan/action/setOptionMaxRuleDurationInMins", deadline=window_expires_at, Integer=1)
+            await zap.get("ascan/action/setOptionThreadPerHost", deadline=window_expires_at, Integer=1)
+            if not context_id:
+                raise RuntimeError("zap_context_id_unavailable")
+            active_scan = await zap.get("ascan/action/scan", deadline=window_expires_at, url=target_url,
+                                       recurse="true", inScopeOnly="true", contextId=context_id)
+            active_scan_id = str(active_scan["scan"])
+            active_deadline = min(loop.time() + MAX_ACTIVE_SCAN_SECONDS,
+                                  loop.time() + max(0, (window_expires_at - datetime.now(timezone.utc)).total_seconds()))
+            while loop.time() < active_deadline:
+                status = await zap.get("ascan/view/status", deadline=window_expires_at, scanId=active_scan_id)
+                if int(status.get("status", 0)) >= 100:
+                    active_scan_completed = True
+                    break
+                await asyncio.sleep(2)
+            else:
+                if datetime.now(timezone.utc) >= window_expires_at:
+                    raise AuthorizationWindowExpired("authorization_window_expired")
+                await zap.get("ascan/action/stop", deadline=window_expires_at, scanId=active_scan_id)
+
         alerts_payload = await zap.get("core/view/alerts", deadline=window_expires_at, baseurl=target_url, start=0, count=MAX_ALERTS)
         alerts = alerts_payload.get("alerts", [])
         findings = []
@@ -191,16 +231,26 @@ async def execute_zap_baseline(target_url: str, run_id: str, window_expires_at: 
                 "alert_reference": str(alert.get("alertRef", "")),
             })
         return findings, {"name": "OWASP ZAP", "version": str(version),
-                          "ruleset": "installed passive scan rules", "max_spider_children_per_page": MAX_SPIDER_CHILDREN,
+                          "ruleset": "installed passive and low-strength active rules" if active else "installed passive scan rules",
+                          "max_spider_children_per_page": MAX_SPIDER_CHILDREN,
+                          "excluded_paths": exclusions,
                           "max_spider_depth": MAX_SPIDER_DEPTH,
                           "max_spider_seconds": MAX_SPIDER_SECONDS, "max_passive_queue_seconds": MAX_PASSIVE_QUEUE_SECONDS,
+                          "max_active_scan_seconds": MAX_ACTIVE_SCAN_SECONDS if active else 0,
                           "spider_completed": spider_completed, "passive_queue_drained": passive_queue_drained,
-                          "coverage_status": "complete" if spider_completed and passive_queue_drained else "partial",
-                          "active_scan": False, "authenticated_scan": False}
+                          "active_scan_completed": active_scan_completed,
+                          "coverage_status": "complete" if spider_completed and passive_queue_drained and (not active or active_scan_completed) else "partial",
+                          "active_scan": bool(active), "attack_strength": "LOW" if active else None,
+                          "authenticated_scan": False}
     finally:
         if scan_id and not spider_completed:
             try:
                 await zap.get("spider/action/stop", allow_after_deadline=True, scanId=scan_id)
+            except Exception:
+                pass
+        if active_scan_id and not active_scan_completed:
+            try:
+                await zap.get("ascan/action/stop", allow_after_deadline=True, scanId=active_scan_id)
             except Exception:
                 pass
         await zap.close()

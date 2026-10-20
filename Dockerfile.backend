@@ -1,3 +1,7 @@
+FROM ghcr.io/gitleaks/gitleaks:v8.30.0 AS gitleaks-tool
+FROM aquasec/trivy:0.76.0 AS trivy-tool
+FROM grafana/k6:1.8.2 AS k6-tool
+
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -7,8 +11,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=gitleaks-tool /usr/bin/gitleaks /usr/local/bin/gitleaks
+COPY --from=trivy-tool /usr/local/bin/trivy /usr/local/bin/trivy
+COPY --from=k6-tool /usr/bin/k6 /usr/local/bin/k6
 COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
+RUN playwright install --with-deps chromium && rm -rf /var/lib/apt/lists/*
 COPY backend/ ./backend/
 WORKDIR /app/backend
 EXPOSE 8000

@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 import engine
 import ledger as ledger_mod
+from tool_adapters import run_repository_static_tools
 from detectors import scan_secrets, scan_pii, scan_logging_leak, static_code_issues, get_project_key
 
 CODE_EXT = {".js", ".jsx", ".ts", ".tsx", ".py", ".java", ".go", ".rb", ".php", ".cs",
@@ -144,7 +145,8 @@ def _clone_and_scan(git_url: str, token: str = None, key=None) -> dict:
                      "endpoints": endpoints, "endpoint_count": len(endpoints),
                      "untested_endpoints": sum(1 for e in endpoints if not e["tested_by"])},
         }
-        return {"profile": profile, "scanned": scanned}
+        tool_assessments = run_repository_static_tools(tmp)
+        return {"profile": profile, "scanned": scanned, "tool_assessments": tool_assessments}
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
