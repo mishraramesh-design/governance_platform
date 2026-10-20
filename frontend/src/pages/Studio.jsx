@@ -66,6 +66,25 @@ export default function Studio() {
     onError: (error) => toast.error(error?.response?.data?.detail || "Repository source audit failed"),
   });
 
+  const runWebSecurityScan = useMutation({
+    mutationFn: () => api.post(`/studio/runs/${result.id}/web-security-scan`),
+    onSuccess: async () => {
+      const response = await api.get(`/studio/runs/${result.id}`);
+      setResult(response.data);
+      refreshRuns();
+      toast.success("OWASP ZAP passive security assessment queued");
+    },
+    onError: (error) => toast.error(error?.response?.data?.detail || "Could not start web security assessment"),
+  });
+
+  useEffect(() => {
+    if (!result?.id || !["queued", "running"].includes(result.web_security_scan?.status)) return undefined;
+    const timer = setInterval(() => {
+      api.get(`/studio/runs/${result.id}`).then((response) => setResult(response.data)).catch(() => {});
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [result?.id, result?.web_security_scan?.status]);
+
   const update = (key) => (event) => setForm((current) => ({
     ...current,
     [key]: event.target.type === "checkbox" ? event.target.checked : event.target.value,
@@ -145,6 +164,36 @@ export default function Studio() {
             <span className={`text-[9px] uppercase font-bold px-2 py-1 ${stateStyle[step.state] || "bg-gray-100"}`}>{step.state.replaceAll("_", " ")}</span>
           </div>)}
         </div>
+        {result.source?.target_url && <section className="mx-4 mb-4 border border-blue-300 bg-blue-50 p-4" data-testid="studio-web-security-scan">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-xs font-bold uppercase tracking-wider">Unauthenticated web security baseline</h3>
+              <p className="text-[11px] text-gray-700 mt-1">OWASP ZAP crawls only the approved host and URL path, then applies passive rules. No exploit payloads, credentials, or load testing.</p>
+            </div>
+            <button type="button" onClick={() => runWebSecurityScan.mutate()} disabled={runWebSecurityScan.isPending || ["queued", "running"].includes(result.web_security_scan?.status)} className="bg-black text-[#FFE600] px-3 py-2 text-xs font-bold disabled:opacity-50">
+              {runWebSecurityScan.isPending ? "Queueing…" : result.web_security_scan?.status === "running" ? "Scan running…" : result.web_security_scan?.status === "queued" ? "Scan queued…" : result.web_security_scan?.status === "completed" ? "Run baseline again" : "Run OWASP ZAP baseline"}
+            </button>
+          </div>
+          {result.web_security_scan && <div className="mt-3 border-t border-blue-200 pt-3">
+            <div className="text-xs font-bold">{result.web_security_scan.status.replaceAll("_", " ")}{result.web_security_scan.status === "completed" ? ` · ${result.web_security_scan.finding_count} findings · OWASP ZAP ${result.web_security_scan.scanner?.version} · ${result.web_security_scan.scanner?.coverage_status} coverage` : ""}</div>
+            {result.web_security_scan.error && <p className="text-xs text-red-800 mt-1">{result.web_security_scan.error}</p>}
+            {result.web_security_scan.status === "completed" && <>
+              {!result.web_security_scan.findings?.length && <p className="text-xs text-gray-700 mt-2">No passive alerts were returned for this scope. This does not establish that the site is secure.</p>}
+              <div className="mt-2 space-y-2">
+                {result.web_security_scan.findings?.map((finding, index) => <article key={`${finding.scanner_id}-${index}`} className="border border-blue-200 bg-white p-3 text-xs">
+                  <div className="flex flex-wrap justify-between gap-2"><strong>{finding.name}</strong><span className="uppercase font-bold">{finding.risk} · {finding.confidence}</span></div>
+                  <div className="font-mono text-[10px] break-all mt-1">{finding.method} {finding.url}{finding.parameter ? ` · ${finding.parameter}` : ""}</div>
+                  {finding.description && <p className="mt-2 whitespace-pre-wrap">{finding.description}</p>}
+                  {finding.evidence && <p className="mt-1 text-gray-600 break-words">Evidence: {finding.evidence}</p>}
+                  {finding.remediation && <p className="mt-2"><strong>Recommended fix:</strong> {finding.remediation}</p>}
+                  <div className="mt-2 text-[10px] text-gray-500">ZAP rule {finding.scanner_id}{finding.cwe_id ? ` · CWE ${finding.cwe_id}` : ""}{finding.wasc_id ? ` · WASC ${finding.wasc_id}` : ""}</div>
+                </article>)}
+              </div>
+              <div className="mt-3 text-[10px] text-gray-600">{result.web_security_scan.limitations?.join(" ")}</div>
+              {result.web_security_scan.ledger && <div className="mt-2 font-mono text-[10px] text-gray-500">Security scan ledger {result.web_security_scan.ledger.seq} · {result.web_security_scan.ledger.hash}</div>}
+            </>}
+          </div>}
+        </section>}
         {result.requirements?.length > 0 && <div className="px-4 pb-4"><h3 className="text-[10px] uppercase tracking-[0.2em] font-bold text-gray-500 mb-2">Review candidate requirements</h3><div className="max-h-64 overflow-y-auto border border-gray-200">{result.requirements.map((req) => <div key={req.id} className="border-b border-gray-100 p-2 text-xs"><span className="font-mono font-bold mr-2">{req.id}</span>{req.text}<div className="text-[10px] text-gray-400">Source line {req.source_line} · {req.trace_status}</div></div>)}</div></div>}
         <div className="px-4 pb-4">{result.limitations.map((item) => <p key={item} className="text-[10px] text-gray-500">• {item}</p>)}</div>
         {result.source?.github_url && <div className="px-4 pb-4 flex flex-wrap items-center gap-2">

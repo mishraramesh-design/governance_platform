@@ -11,6 +11,8 @@ services:
     volumes:
       - mongo_data:/data/db
       - ./deploy/init-mongo.js:/docker-entrypoint-initdb.d/01-init-app-user.js:ro
+    networks:
+      - database
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
       interval: 10s
@@ -31,9 +33,47 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ZAP_API_URL: ${ZAP_API_URL:-http://zap:8080}
+      ZAP_API_KEY: ${ZAP_API_KEY:?Set ZAP_API_KEY to a long random value}
     depends_on:
       mongo:
         condition: service_healthy
+      zap:
+        condition: service_healthy
+    networks:
+      - database
+      - app
+
+  zap:
+    image: ghcr.io/zaproxy/zaproxy:stable
+    restart: unless-stopped
+    command:
+      - zap.sh
+      - -daemon
+      - -host
+      - 0.0.0.0
+      - -port
+      - "8080"
+      - -config
+      - api.key=${ZAP_API_KEY:?Set ZAP_API_KEY to a long random value}
+      - -config
+      - api.addrs.addr.name=.*
+      - -config
+      - api.addrs.addr.regex=true
+    shm_size: 512mb
+    mem_limit: 1g
+    cpus: 1.0
+    environment:
+      ZAP_API_KEY: ${ZAP_API_KEY:?Set ZAP_API_KEY to a long random value}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c 'import os,urllib.request; urllib.request.urlopen("http://127.0.0.1:8080/JSON/core/view/version/?apikey="+os.environ["ZAP_API_KEY"], timeout=3)'
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks:
+      - app
 
   frontend:
     build:
@@ -43,8 +83,17 @@ services:
     restart: unless-stopped
     ports:
       - "${STUDIO_PORT:-8080}:80"
+    networks:
+      - app
     depends_on:
       - backend
 
 volumes:
   mongo_data:
+
+networks:
+  app:
+    driver: bridge
+  database:
+    driver: bridge
+    internal: true
