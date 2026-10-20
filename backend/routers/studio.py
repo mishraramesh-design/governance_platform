@@ -17,7 +17,8 @@ from pydantic import ValidationError
 from database import db
 from models import GovernanceStudioRunRequest
 from web_security_scan import execute_zap_baseline, validate_public_target
-from studio_planning import build_run_plan, extract_candidate_requirements, sha256_text, summarize_runtime_logs
+from studio_planning import (build_run_plan, draft_test_cases, extract_candidate_requirements,
+                             framework_catalog, sha256_text, summarize_runtime_logs)
 import repo_ingest
 import auth
 import ledger as ledger_mod
@@ -41,6 +42,14 @@ async def _create_studio_run(payload: GovernanceStudioRunRequest, user):
         raise HTTPException(400, "Provide scope/exclusions, the authorizing owner's name, and an approval/ticket reference.")
 
     requirements = extract_candidate_requirements(payload.frs_text)
+    test_case_drafts = draft_test_cases(requirements)
+    runtime_summary = summarize_runtime_logs(payload.runtime_logs)
+    plan = build_run_plan(bool(payload.github_url), bool(payload.frs_text), bool(payload.target_url), bool(payload.runtime_logs), payload.authorization_confirmed)
+    if runtime_summary and runtime_summary.get("sensitive_line_count", 0):
+        for step in plan:
+            if step["id"] == "RUNTIME-01":
+                step["state"] = "signals_detected_review_required"
+                step["evidence"] = "known secret/PII patterns detected; review source logs safely; raw log content is not retained"
     run_id = str(uuid4())
     now = datetime.now(timezone.utc).isoformat()
     record = {
@@ -62,8 +71,11 @@ async def _create_studio_run(payload: GovernanceStudioRunRequest, user):
                    "frs_raw_retained": False, "runtime_logs_raw_retained": False},
         "requirements": requirements,
         "requirements_candidate_count": len(requirements),
-        "runtime_summary": summarize_runtime_logs(payload.runtime_logs),
-        "plan": build_run_plan(bool(payload.github_url), bool(payload.frs_text), bool(payload.target_url), bool(payload.runtime_logs), payload.authorization_confirmed),
+        "test_case_drafts": test_case_drafts,
+        "test_case_draft_count": len(test_case_drafts),
+        "framework_catalog": framework_catalog(),
+        "runtime_summary": runtime_summary,
+        "plan": plan,
         "policy": {"active_web_testing_executed": False, "destructive_testing": False,
                    "credential_use": False, "cross_scope_requests": False,
                    "cmmi_level_claim": False,
@@ -86,6 +98,7 @@ async def _create_studio_run(payload: GovernanceStudioRunRequest, user):
         "authorization_scope": payload.authorization_scope,
         "frs_sha256": record["inputs"]["frs_sha256"], "runtime_logs_sha256": record["inputs"]["runtime_logs_sha256"],
         "requirements_candidate_count": len(requirements),
+        "test_case_draft_count": len(test_case_drafts),
     })
     record["ledger"] = {"seq": ledger_entry["seq"], "hash": ledger_entry["hash"], "entry_id": ledger_entry["id"]}
     await db.studio_runs.update_one({"id": run_id}, {"$set": {"ledger": record["ledger"]}})

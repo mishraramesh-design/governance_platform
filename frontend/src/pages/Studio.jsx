@@ -12,6 +12,8 @@ const stateStyle = {
   authorization_required: "text-amber-900 bg-amber-50",
   blocked_missing_input: "text-gray-600 bg-gray-100",
   planned_requires_repository_test_execution: "text-blue-800 bg-blue-50",
+  drafts_require_review: "text-purple-900 bg-purple-50",
+  signals_detected_review_required: "text-amber-900 bg-amber-50",
   not_executed_no_scanner_adapter: "text-amber-900 bg-amber-50",
   not_executed_requires_test_environment_and_limits: "text-amber-900 bg-amber-50",
   advisory_readiness_only: "text-purple-900 bg-purple-50",
@@ -151,9 +153,11 @@ export default function Studio() {
           <div><div className="text-[10px] uppercase tracking-[0.2em] text-gray-300">Plan recorded · {result.id.slice(0, 8)}</div><h2 className="font-bold">{result.name}</h2></div>
           <span className="text-[10px] uppercase border border-[#FFE600] text-[#FFE600] px-2 py-1">{result.status.replaceAll("_", " ")} · evidence ledgered</span>
         </div>
-        <div className="p-4 grid md:grid-cols-3 gap-3 text-xs">
+        <div className="p-4 grid md:grid-cols-2 xl:grid-cols-5 gap-3 text-xs">
           <div className="border border-gray-200 p-3"><div className="text-[10px] uppercase text-gray-400">Requirement candidates</div><strong>{result.requirements_candidate_count}</strong></div>
           <div className="border border-gray-200 p-3"><div className="text-[10px] uppercase text-gray-400">Runtime errors / 5xx</div><strong>{result.runtime_summary ? `${result.runtime_summary.error_lines} / ${result.runtime_summary.http_5xx_lines}` : "No logs supplied"}</strong></div>
+          <div className="border border-gray-200 p-3"><div className="text-[10px] uppercase text-gray-400">Known sensitive log signals</div><strong>{result.runtime_summary ? `${result.runtime_summary.secret_signal_count ?? 0} secret · ${result.runtime_summary.pii_signal_count ?? 0} PII` : "No logs supplied"}</strong><div className="mt-1 text-[10px] text-gray-500">{result.runtime_summary?.sensitive_data_review?.replaceAll("_", " ") || "Raw logs are not retained"}</div></div>
+          <div className="border border-gray-200 p-3"><div className="text-[10px] uppercase text-gray-400">Test outlines · not executed</div><strong>{result.test_case_draft_count ?? 0}</strong></div>
           <div className="border border-gray-200 p-3"><div className="text-[10px] uppercase text-gray-400">Target contact</div><strong>{result.web_security_scan?.status === "completed" ? "Contacted by approved baseline" : ["queued", "running"].includes(result.web_security_scan?.status) ? "Baseline in progress" : result.web_security_scan?.status === "failed" ? "Contact status uncertain" : "Not contacted"}</strong></div>
         </div>
         <div className="px-4 pb-4 space-y-2">
@@ -164,6 +168,24 @@ export default function Studio() {
             <span className={`text-[9px] uppercase font-bold px-2 py-1 ${stateStyle[step.state] || "bg-gray-100"}`}>{step.state.replaceAll("_", " ")}</span>
           </div>)}
         </div>
+        {result.test_case_drafts?.length > 0 && <section className="px-4 pb-4" data-testid="studio-test-case-drafts">
+          <h3 className="text-[10px] uppercase tracking-[0.2em] font-bold text-gray-500 mb-2">Trace-linked test design drafts</h3>
+          <p className="text-[11px] text-gray-600 mb-2">These deterministic outlines link to extracted requirement candidates. They are not executable tests or pass/fail evidence; approve the setup and measurable assertion before implementation.</p>
+          <div className="space-y-2">{result.test_case_drafts.map((testCase) => <article key={testCase.id} className="border border-gray-200 p-3 text-xs">
+            <div className="flex flex-wrap items-center gap-2"><strong className="font-mono">{testCase.id}</strong><span className="uppercase text-[9px] bg-gray-100 px-2 py-1">{testCase.category}</span><span className="text-gray-500">Traces to {testCase.source_requirement_id} · line {testCase.source_line}</span><span className="ml-auto text-[9px] uppercase text-purple-800">Draft · review required</span></div>
+            <div className="mt-2 font-semibold">{testCase.title}</div><p className="mt-1">Requirement: {testCase.objective}</p>
+            <p className="mt-1 text-gray-600">Expected: {testCase.expected_result}</p>
+            <p className="mt-1 text-[10px] text-gray-500">Suggested runner: {testCase.recommended_runner}. {testCase.review_note}</p>
+          </article>)}</div>
+        </section>}
+        {result.framework_catalog?.length > 0 && <section className="px-4 pb-4" data-testid="studio-framework-catalog">
+          <h3 className="text-[10px] uppercase tracking-[0.2em] font-bold text-gray-500 mb-2">Framework roadmap · candidates, not installed</h3>
+          <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-2">{result.framework_catalog.map((framework) => <article key={framework.id} className="border border-gray-200 p-3 text-xs">
+            <div className="flex justify-between gap-2"><strong>{framework.name}</strong><span className="text-[9px] uppercase text-amber-800">Not integrated</span></div>
+            <div className="text-[10px] text-gray-500 mt-1">{framework.stage.replaceAll("_", " ")} · {framework.mode.replaceAll("_", " ")} · {framework.license}</div>
+            <p className="mt-2 text-gray-700">{framework.note}</p>
+          </article>)}</div>
+        </section>}
         {result.source?.target_url && <section className="mx-4 mb-4 border border-blue-300 bg-blue-50 p-4" data-testid="studio-web-security-scan">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>

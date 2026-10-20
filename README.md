@@ -7,13 +7,15 @@ Governance AI Studio extends the IV&V Governance Platform into a project-scoped 
 - Create a governed assessment plan from a GitHub URL, pasted or uploaded FRS requirements (TXT, Markdown, DOCX, PDF), an optional deployed URL, runtime logs, and a selected assessment window.
 - Require an authorization attestation, named owner, approval/ticket reference, exact scope, exclusions, and expiry window before a web target can be registered.
 - Extract candidate requirements with source-line references; redact recognized secrets and PII before candidate text is retained.
-- Summarize runtime error, HTTP status, and security-signal counts while discarding raw log text.
+- Draft deterministic, trace-linked functional and non-functional test outlines from candidate requirements. Drafts require human review, do not invent performance thresholds, and are not executable test evidence.
+- Summarize runtime error, HTTP status, and security-signal counts; scan for known secret and PII patterns while discarding raw log text. This is pattern-based detection, not a guarantee that all sensitive data is found.
+- Show a framework roadmap that distinguishes candidate tools from installed or integrated adapters. Semgrep CE, Gitleaks, Trivy, Playwright, Schemathesis, Hypothesis, and k6 are listed as candidates; this release does not claim those tools are installed or run by the Studio.
 - Record run metadata and input hashes in the append-only audit ledger.
 - Link into the existing read-only repository audit, deterministic source detectors, findings, gates, and evidence-pack exports.
 - Run a bounded unauthenticated OWASP ZAP baseline crawl after owner authorization. The scan is limited to the supplied HTTPS host/path, five crawl levels, 50 child links per page, and two minutes of crawling, followed by passive rules. Normalized findings, remediation guidance, ZAP version, and a ledger reference appear in the assessment.
 - Route agent assistance through the existing multi-provider gateway, zero-LLM control, role profiles, and per-run model-call budget.
 
-Creating an assessment plan records the web target but does not contact it. The separate ZAP baseline action requires the attested authorization owner, reference, scope, and unexpired window. It only performs unauthenticated crawl and passive rules. Active exploit-style DAST, authenticated scanning, database access tests, secret exfiltration, and load testing are not implemented. CMMI-related outputs are readiness evidence; the product does not claim a CMMI maturity level.
+Creating an assessment plan records the web target but does not contact it. The separate ZAP baseline action requires the attested authorization owner, reference, scope, and unexpired window. It only performs unauthenticated crawl and passive rules. Active exploit-style DAST, authenticated scanning, database access tests, secret exfiltration, generated-test execution, and load testing are not implemented. CMMI-related outputs are readiness evidence; the product does not claim a CMMI maturity level.
 
 ## Run locally with Docker Compose
 
