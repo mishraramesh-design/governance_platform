@@ -5,6 +5,9 @@ authorized execution adapter and an approved target scope.
 """
 from datetime import datetime, timezone, timedelta
 from uuid import uuid4
+import asyncio
+import logging
+import os
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from io import BytesIO
@@ -13,19 +16,28 @@ from pydantic import ValidationError
 
 from database import db
 from models import GovernanceStudioRunRequest
+from web_security_scan import execute_zap_baseline, validate_public_target
 from studio_planning import build_run_plan, extract_candidate_requirements, sha256_text, summarize_runtime_logs
 import repo_ingest
 import auth
 import ledger as ledger_mod
 
 router = APIRouter(prefix="/studio", tags=["Governance Studio"])
+logger = logging.getLogger(__name__)
+_web_scan_lock = asyncio.Lock()
+_web_scan_enqueue_lock = asyncio.Lock()
+_web_scan_tasks = set()
+
+
+def _zap_enabled():
+    return bool(os.environ.get("ZAP_API_URL") and os.environ.get("ZAP_API_KEY"))
 
 
 async def _create_studio_run(payload: GovernanceStudioRunRequest, user):
     await auth.require_any_global_role(user, auth.GOVERNANCE_ROLES)
     if payload.target_url and not payload.authorization_confirmed:
         raise HTTPException(400, "Confirm written authorization before adding a web target.")
-    if payload.target_url and not all((payload.authorization_scope, payload.authorization_owner, payload.authorization_reference)):
+    if payload.target_url and not all(str(value or "").strip() for value in (payload.authorization_scope, payload.authorization_owner, payload.authorization_reference)):
         raise HTTPException(400, "Provide scope/exclusions, the authorizing owner's name, and an approval/ticket reference.")
 
     requirements = extract_candidate_requirements(payload.frs_text)
@@ -60,16 +72,126 @@ async def _create_studio_run(payload: GovernanceStudioRunRequest, user):
                         "No dynamic or load test has run; execution requires a separately approved scanner adapter and bounded environment.",
                         "Extracted requirements are candidates and need accountable human review."],
     }
+    if payload.target_url and _zap_enabled():
+        for step in record["plan"]:
+            if step["id"] == "WEB-01":
+                step.update({"executor": "OWASP ZAP baseline (passive rules)", "state": "planned_execution_available",
+                             "evidence": "bounded crawl, passive alert evidence, scanner version and ledger reference"})
     await db.studio_runs.insert_one(dict(record))
     ledger_entry = await ledger_mod.append_to_ledger(db, "governance_studio_run_created", run_id, {
         "name": payload.name, "github_url": payload.github_url, "target_url": payload.target_url,
         "authorization_confirmed": payload.authorization_confirmed, "duration_hours": payload.duration_hours,
+        "authorization_owner": payload.authorization_owner,
+        "authorization_reference": payload.authorization_reference,
+        "authorization_scope": payload.authorization_scope,
         "frs_sha256": record["inputs"]["frs_sha256"], "runtime_logs_sha256": record["inputs"]["runtime_logs_sha256"],
         "requirements_candidate_count": len(requirements),
     })
     record["ledger"] = {"seq": ledger_entry["seq"], "hash": ledger_entry["hash"], "entry_id": ledger_entry["id"]}
     await db.studio_runs.update_one({"id": run_id}, {"$set": {"ledger": record["ledger"]}})
     return record
+
+
+async def _run_zap_for_record(run_id: str, record: dict, user_id: str):
+    """Run a serialized, bounded ZAP baseline and retain normalized findings."""
+    async with _web_scan_lock:
+        await db.studio_runs.update_one({"id": run_id}, {"$set": {"web_security_scan.status": "running",
+                                                                    "web_security_scan.started_at": datetime.now(timezone.utc).isoformat()}})
+        try:
+            expires_at = datetime.fromisoformat(record["source"]["window_expires_at"])
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) >= expires_at:
+                raise RuntimeError("authorization_window_expired")
+            target = record["source"]["target_url"]
+            findings, metadata = await execute_zap_baseline(target, run_id, expires_at)
+            completed_at = datetime.now(timezone.utc).isoformat()
+            result = {
+                "status": "completed", "mode": "unauthenticated_passive_baseline",
+                "started_by_user_id": user_id, "completed_at": completed_at,
+                "target_url": target, "scope": record["source"]["authorization_scope"],
+                "authorization_reference": record["source"]["authorization_reference"],
+                "scanner": metadata, "finding_count": len(findings), "findings": findings,
+                "limitations": ["Passive ZAP rules only; no exploit payloads, authentication, database access, or load testing were used.",
+                                "This is automated evidence, not proof that the application is secure.",
+                                "Review each alert and reproduce only within the approved scope."],
+            }
+            entry = await ledger_mod.append_to_ledger(db, "governance_studio_web_security_scan_completed", run_id, {
+                "target_url": target, "scan_mode": result["mode"], "scanner": metadata,
+                "finding_count": len(findings), "authorization_reference": record["source"]["authorization_reference"],
+            })
+            result["ledger"] = {"seq": entry["seq"], "hash": entry["hash"], "entry_id": entry["id"]}
+            await db.studio_runs.update_one(
+                {"id": run_id},
+                {"$set": {"web_security_scan": result, "status": "partially_assessed",
+                          "plan.$[step].state": "completed_passive_scan",
+                          "plan.$[step].evidence": f"{len(findings)} OWASP ZAP passive alerts; ledger {entry['seq']}"}},
+                array_filters=[{"step.id": "WEB-01"}],
+            )
+        except Exception as exc:
+            logger.error("ZAP baseline failed for studio run %s (%s)", run_id, type(exc).__name__)
+            failure = {"status": "failed", "queued_at": (record.get("web_security_scan") or {}).get("queued_at"),
+                       "failed_at": datetime.now(timezone.utc).isoformat(),
+                       "error": "Scanner request failed. Check scanner availability and backend logs.",
+                       "error_code": type(exc).__name__, "mode": "unauthenticated_passive_baseline"}
+            await db.studio_runs.update_one(
+                {"id": run_id},
+                {"$set": {"web_security_scan": failure,
+                          "plan.$[step].state": "scanner_execution_failed",
+                          "plan.$[step].evidence": "No scan findings recorded; inspect scanner availability before retrying."}},
+                array_filters=[{"step.id": "WEB-01"}],
+            )
+
+
+def _track_web_scan_task(task):
+    _web_scan_tasks.add(task)
+    task.add_done_callback(_web_scan_tasks.discard)
+
+
+@router.post("/runs/{run_id}/web-security-scan", status_code=202)
+async def start_web_security_scan(run_id: str, user=Depends(auth.get_current_user)):
+    """Queue a bounded, unauthenticated passive DAST crawl for an approved scope."""
+    await auth.require_any_global_role(user, auth.GOVERNANCE_ROLES)
+    if not _zap_enabled():
+        raise HTTPException(503, "OWASP ZAP scanner is not configured for this deployment.")
+    record = await db.studio_runs.find_one({"id": run_id}, {"_id": 0})
+    if not record:
+        raise HTTPException(404, "studio run not found")
+    source = record.get("source") or {}
+    if not source.get("target_url"):
+        raise HTTPException(400, "Add a deployed application URL to this assessment first.")
+    if not source.get("authorization_confirmed") or not all(str(source.get(k) or "").strip() for k in ("authorization_owner", "authorization_reference", "authorization_scope")):
+        raise HTTPException(403, "Written authorization, owner, approval reference, and exact scope are required.")
+    expires_at = datetime.fromisoformat(source["window_expires_at"])
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) >= expires_at:
+        raise HTTPException(403, "The authorized assessment window has expired.")
+    try:
+        await validate_public_target(source["target_url"])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    async with _web_scan_enqueue_lock:
+        active = await db.studio_runs.find_one({"web_security_scan.status": {"$in": ["queued", "running"]}}, {"_id": 0, "id": 1})
+        if active:
+            raise HTTPException(409, "Another web security scan is already queued or running. Try again after it completes.")
+        record = await db.studio_runs.find_one({"id": run_id}, {"_id": 0})
+        previous = (record or {}).get("web_security_scan") or {}
+        if previous.get("status") in ("queued", "running"):
+            raise HTTPException(409, "A web security scan is already queued or running for this assessment.")
+        last_scan = previous.get("completed_at") or previous.get("failed_at") or previous.get("queued_at")
+        if last_scan:
+            try:
+                last_scan_at = datetime.fromisoformat(last_scan)
+                if datetime.now(timezone.utc) - last_scan_at < timedelta(minutes=10):
+                    raise HTTPException(429, "Wait ten minutes between repeated scans of the same assessment.")
+            except ValueError:
+                pass
+        queued = {"status": "queued", "mode": "unauthenticated_passive_baseline",
+                  "queued_at": datetime.now(timezone.utc).isoformat(), "started_by_user_id": user["id"]}
+        await db.studio_runs.update_one({"id": run_id}, {"$set": {"web_security_scan": queued}})
+    _track_web_scan_task(asyncio.create_task(_run_zap_for_record(run_id, record, user["id"])))
+    return {"id": run_id, "web_security_scan": queued}
 
 
 @router.post("/runs")
