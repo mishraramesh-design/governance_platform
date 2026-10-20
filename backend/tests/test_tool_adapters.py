@@ -1,14 +1,18 @@
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 from unittest.mock import patch
 
 from tool_adapters import (TOOL_SPECS, _PLAYWRIGHT_SMOKE, _assessment_argv, _k6_smoke_script, framework_inventory,
                            run_repository_static_tools)
 from safe_logging import run_log_canary_test
 from models import StudioFrameworkAssessmentRequest
+from scan_scope import build_zap_context_regexes
+from studio_planning import performance_assessment_plan_update
 
 
 class GovernanceToolAdapterTests(unittest.TestCase):
@@ -65,6 +69,24 @@ class GovernanceToolAdapterTests(unittest.TestCase):
         self.assertIn("rate<0.025", script)
         self.assertIn("redirects: 0", script)
         self.assertIn("sleep(1)", script)
+        self.assertIn("request_port != target_port", _PLAYWRIGHT_SMOKE)
+
+    def test_zap_exclusions_cover_query_variants_without_matching_sibling_paths(self):
+        scope, exclusions = build_zap_context_regexes(
+            urlsplit("https://staging.example.test/app"), ["/app/logout"]
+        )
+        self.assertRegex("https://staging.example.test/app/page?x=1", scope)
+        self.assertRegex("https://staging.example.test/app/logout?next=/app/home", exclusions[0])
+        self.assertRegex("https://staging.example.test/app/logout/confirm", exclusions[0])
+        self.assertIsNone(re.match(exclusions[0], "https://staging.example.test/app/logoutx?next=1"))
+
+    def test_k6_result_updates_performance_plan_state_and_evidence(self):
+        completed = performance_assessment_plan_update("completed", 2, 15, 900, 1.0, 12)
+        self.assertEqual(completed["state"], "completed_bounded_smoke")
+        self.assertIn("2 VUs", completed["evidence"])
+        self.assertIn("ledger 12", completed["evidence"])
+        failed = performance_assessment_plan_update("completed_with_failures", 2, 15, 900, 1.0, 13)
+        self.assertEqual(failed["state"], "completed_with_failures")
 
     def test_studio_logging_canary_is_redacted(self):
         result = run_log_canary_test()

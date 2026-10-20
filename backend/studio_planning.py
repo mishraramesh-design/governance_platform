@@ -121,6 +121,22 @@ def framework_catalog():
     }
     return [{**item, "note": notes[item["id"]]} for item in framework_inventory()]
 
+
+def performance_assessment_plan_update(status, virtual_users, duration_seconds,
+                                       max_p95_ms, max_error_rate_percent, ledger_seq):
+    if status == "completed":
+        state = "completed_bounded_smoke"
+    elif status == "completed_with_failures":
+        state = "completed_with_failures"
+    else:
+        state = "k6_execution_failed"
+    evidence = (
+        f"k6 {status} · {virtual_users} VUs · {duration_seconds}s · "
+        f"p95 threshold {max_p95_ms}ms · failure threshold "
+        f"{max_error_rate_percent}% · ledger {ledger_seq}"
+    )
+    return {"state": state, "evidence": evidence}
+
 def build_run_plan(has_repo, has_frs, has_target, has_logs, authorized):
     return [
         {"id": "SCOPE-01", "stage": "Governance", "activity": "Validate approved scope and exclusions", "executor": "deterministic_policy", "state": "ready" if (not has_target or authorized) else "authorization_required", "evidence": "authorization and scope record", "human_gate": True},

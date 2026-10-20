@@ -9,6 +9,7 @@ from urllib.parse import unquote, urlsplit
 
 import httpx
 from detectors import mask_sensitive_text
+from scan_scope import build_zap_context_regexes
 
 
 MAX_SPIDER_SECONDS = 120
@@ -142,18 +143,9 @@ async def execute_zap_baseline(target_url: str, run_id: str, window_expires_at: 
         await zap.get("spider/action/setOptionMaxChildren", deadline=window_expires_at, Integer=MAX_SPIDER_CHILDREN)
         context_result = await zap.get("context/action/newContext", deadline=window_expires_at, contextName=context_name)
         context_id = str(context_result.get("contextId", ""))
-        escaped_host = re.escape(parsed.hostname)
-        port = f":{parsed.port}" if parsed.port and parsed.port != 443 else ""
-        root_path = parsed.path.rstrip("/") or "/"
-        escaped_path = re.escape(root_path.rstrip("/"))
-        if root_path == "/":
-            scope_regex = rf"^https://{escaped_host}{port}(?:/.*)?$"
-        else:
-            scope_regex = rf"^https://{escaped_host}{port}{escaped_path}(?:/.*)?(?:\?.*)?$"
+        scope_regex, excluded_regexes = build_zap_context_regexes(parsed, exclusions)
         await zap.get("context/action/includeInContext", deadline=window_expires_at, contextName=context_name, regex=scope_regex)
-        for excluded_path in exclusions:
-            excluded_root = excluded_path.rstrip("/") or "/"
-            excluded_regex = rf"^https://{escaped_host}{port}{re.escape(excluded_root)}(?:/.*)?$"
+        for excluded_regex in excluded_regexes:
             await zap.get("context/action/excludeFromContext", deadline=window_expires_at,
                           contextName=context_name, regex=excluded_regex)
         # Initial target is the exact URL supplied. Crawling is restricted to

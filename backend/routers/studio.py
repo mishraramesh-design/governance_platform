@@ -20,7 +20,8 @@ from database import db
 from models import GovernanceStudioRunRequest, StudioWebScanRequest, StudioFrameworkAssessmentRequest
 from web_security_scan import execute_zap_baseline, validate_public_target, validate_scan_exclusions
 from studio_planning import (build_run_plan, draft_test_cases, extract_candidate_requirements,
-                             framework_catalog, sha256_text, summarize_runtime_logs)
+                             framework_catalog, performance_assessment_plan_update, sha256_text,
+                             summarize_runtime_logs)
 import gateway
 import repo_ingest
 import auth
@@ -231,7 +232,21 @@ async def _run_framework_assessment(run_id, record, request, user_id):
                                "max_error_rate_percent": request.max_error_rate_percent if request.framework == "k6" else None},
             })
             output["ledger"] = {"seq": entry["seq"], "hash": entry["hash"], "entry_id": entry["id"]}
-            await db.studio_runs.update_one({"id": run_id}, {"$set": {"framework_assessment": output}})
+            update = {"framework_assessment": output}
+            array_filters = None
+            if request.framework == "k6":
+                perf_update = performance_assessment_plan_update(
+                    output["status"], request.virtual_users, request.duration_seconds,
+                    request.max_p95_ms, request.max_error_rate_percent, entry["seq"],
+                )
+                update.update({
+                    "plan.$[step].state": perf_update["state"],
+                    "plan.$[step].evidence": perf_update["evidence"],
+                })
+                array_filters = [{"step.id": "PERF-01"}]
+            await db.studio_runs.update_one(
+                {"id": run_id}, {"$set": update}, **({"array_filters": array_filters} if array_filters else {})
+            )
         except Exception as exc:
             logger.error("Studio framework assessment failed for run %s (%s)", run_id, type(exc).__name__)
             failed = {

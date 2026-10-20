@@ -246,15 +246,16 @@ _PLAYWRIGHT_SMOKE = r'''import asyncio, json, sys
 from urllib.parse import urlsplit
 from playwright.async_api import async_playwright
 async def main():
- target=sys.argv[1]; base=urlsplit(target); errors=[]; statuses=[]; request_count=[0]
+ target=sys.argv[1]; base=urlsplit(target); target_port=base.port or 443; errors=[]; statuses=[]; request_count=[0]
  async with async_playwright() as p:
   browser=await p.chromium.launch(headless=True)
   context=await browser.new_context()
   async def guard(route):
    u=urlsplit(route.request.url)
+   request_port=u.port or (443 if u.scheme == 'https' else 80)
    root=base.path.rstrip('/') or '/'
    request_count[0]+=1
-   if request_count[0] > 30 or route.request.resource_type in ('image','font','media') or u.scheme != 'https' or u.hostname != base.hostname or (root != '/' and not (u.path == root or u.path.startswith(root + '/'))):
+   if request_count[0] > 30 or route.request.resource_type in ('image','font','media') or u.scheme != 'https' or u.hostname != base.hostname or request_port != target_port or (root != '/' and not (u.path == root or u.path.startswith(root + '/'))):
     await route.abort()
    else: await route.continue_()
   await context.route('**/*', guard)
