@@ -51,6 +51,10 @@ logger = logging.getLogger(__name__)
 @app.on_event("startup")
 async def seed_on_startup():
     try:
+        await studio_routes.recover_scanner()
+    except Exception:
+        logger.error("ZAP orphan recovery failed; new web scans are blocked until backend restart.")
+    try:
         await db.studio_runs.update_many(
             {"web_security_scan.status": {"$in": ["queued", "running"]}},
             {"$set": {"web_security_scan.status": "interrupted",

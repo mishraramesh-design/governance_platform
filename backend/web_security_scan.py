@@ -10,7 +10,7 @@ from urllib.parse import unquote, urlsplit
 import httpx
 from detectors import mask_sensitive_text
 from scan_scope import build_zap_context_regexes
-from zap_policy import create_active_scan_policy
+from zap_policy import create_active_scan_policy, EXCLUDED_ACTIVE_RULES
 
 
 MAX_SPIDER_SECONDS = 120
@@ -65,6 +65,10 @@ class AuthorizationWindowExpired(RuntimeError):
     pass
 
 
+class ScannerCleanupFailed(RuntimeError):
+    pass
+
+
 class ZapApi:
     def __init__(self):
         self.base_url = os.environ["ZAP_API_URL"].rstrip("/")
@@ -79,7 +83,7 @@ class ZapApi:
                 raise AuthorizationWindowExpired("authorization_window_expired")
             if remaining > 0:
                 timeout = min(timeout, remaining)
-        response = await self.client.get(f"{self.base_url}/JSON/{path}/", params={"apikey": self.api_key, **params}, timeout=timeout)
+        response = await self.client.get(f"{self.base_url}/JSON/{path}/", headers={"X-ZAP-API-Key": self.api_key}, params=params, timeout=timeout)
         response.raise_for_status()
         payload = response.json()
         if isinstance(payload, dict) and payload.get("code"):
@@ -118,7 +122,7 @@ def validate_scan_exclusions(target_url: str, excluded_paths=None):
     return exclusions
 
 
-async def execute_zap_baseline(target_url: str, run_id: str, window_expires_at: datetime, active=False, excluded_paths=None):
+async def execute_zap_baseline(target_url: str, run_id: str, window_expires_at: datetime, active=False, excluded_paths=None, progress=None):
     """Run a bounded spider/passive scan and optionally a low-strength active scan."""
     if window_expires_at.tzinfo is None:
         window_expires_at = window_expires_at.replace(tzinfo=timezone.utc)
@@ -135,12 +139,17 @@ async def execute_zap_baseline(target_url: str, run_id: str, window_expires_at: 
     policy_name = None
     spider_completed = False
     active_scan_completed = False
+    async def report(stage, **details):
+        if progress:
+            await progress(stage, details)
+
     try:
+        await report("connecting")
         version_data = await zap.get("core/view/version", deadline=window_expires_at)
         version = version_data.get("version", "unknown")
         # This deployment uses one private, serialized ZAP daemon. Reset its
         # in-memory session so results from earlier projects cannot mix in.
-        await zap.get("core/action/newSession", deadline=window_expires_at, name=context_name, overwrite="true")
+        await zap.get("core/action/newSession", deadline=window_expires_at, name="", overwrite="true")
         await zap.get("spider/action/setOptionMaxDuration", deadline=window_expires_at, Integer=2)
         await zap.get("spider/action/setOptionMaxDepth", deadline=window_expires_at, Integer=MAX_SPIDER_DEPTH)
         await zap.get("spider/action/setOptionMaxChildren", deadline=window_expires_at, Integer=MAX_SPIDER_CHILDREN)
@@ -151,6 +160,8 @@ async def execute_zap_baseline(target_url: str, run_id: str, window_expires_at: 
         for excluded_regex in excluded_regexes:
             await zap.get("context/action/excludeFromContext", deadline=window_expires_at,
                           contextName=context_name, regex=excluded_regex)
+        await zap.get("context/action/setContextInScope", deadline=window_expires_at,
+                      contextName=context_name, booleanInScope="true")
         # Initial target is the exact URL supplied. Crawling is restricted to
         # the exact host and target path subtree through the ZAP context.
         scan = await zap.get("spider/action/scan", deadline=window_expires_at, url=target_url, contextName=context_name,
@@ -160,6 +171,7 @@ async def execute_zap_baseline(target_url: str, run_id: str, window_expires_at: 
         spider_deadline = min(loop.time() + MAX_SPIDER_SECONDS, loop.time() + max(0, (window_expires_at - datetime.now(timezone.utc)).total_seconds()))
         while loop.time() < spider_deadline:
             status = await zap.get("spider/view/status", deadline=window_expires_at, scanId=scan_id)
+            await report("crawling", stage_percent=int(status.get("status", 0)), scanner_scan_id=scan_id)
             if int(status.get("status", 0)) >= 100:
                 spider_completed = True
                 break
@@ -173,6 +185,7 @@ async def execute_zap_baseline(target_url: str, run_id: str, window_expires_at: 
         passive_queue_drained = False
         while loop.time() < passive_deadline:
             queue = await zap.get("pscan/view/recordsToScan", deadline=window_expires_at)
+            await report("passive_analysis", pending_records=int(queue.get("recordsToScan", 0)))
             if int(queue.get("recordsToScan", 0)) <= 0:
                 passive_queue_drained = True
                 break
@@ -197,6 +210,7 @@ async def execute_zap_baseline(target_url: str, run_id: str, window_expires_at: 
                                   loop.time() + max(0, (window_expires_at - datetime.now(timezone.utc)).total_seconds()))
             while loop.time() < active_deadline:
                 status = await zap.get("ascan/view/status", deadline=window_expires_at, scanId=active_scan_id)
+                await report("active_scanning", stage_percent=int(status.get("status", 0)), scanner_scan_id=active_scan_id)
                 if int(status.get("status", 0)) >= 100:
                     active_scan_completed = True
                     break
@@ -206,12 +220,27 @@ async def execute_zap_baseline(target_url: str, run_id: str, window_expires_at: 
                     raise AuthorizationWindowExpired("authorization_window_expired")
                 await zap.get("ascan/action/stop", deadline=window_expires_at, scanId=active_scan_id)
 
+        # Active requests also enqueue passive work; drain that work before collecting alerts.
+        if active:
+            passive_queue_drained = False
+            drain_deadline = loop.time() + MAX_PASSIVE_QUEUE_SECONDS
+            while loop.time() < drain_deadline:
+                queue = await zap.get("pscan/view/recordsToScan", deadline=window_expires_at)
+                pending = int(queue.get("recordsToScan", 0))
+                await report("finalizing_passive_analysis", pending_records=pending)
+                if pending <= 0:
+                    passive_queue_drained = True
+                    break
+                await asyncio.sleep(2)
+        await report("collecting_results")
         alerts_payload = await zap.get("core/view/alerts", deadline=window_expires_at, baseurl=target_url, start=0, count=MAX_ALERTS)
         alerts = alerts_payload.get("alerts", [])
         findings = []
         seen = set()
         for alert in alerts:
             if not _in_scope(alert, parsed):
+                continue
+            if any(re.match(pattern, alert.get("url") or "") for pattern in excluded_regexes):
                 continue
             key = (alert.get("pluginId"), alert.get("url"), alert.get("param"), alert.get("name"))
             if key in seen:
@@ -242,20 +271,24 @@ async def execute_zap_baseline(target_url: str, run_id: str, window_expires_at: 
                           "max_active_scan_seconds": MAX_ACTIVE_SCAN_SECONDS if active else 0,
                           "spider_completed": spider_completed, "passive_queue_drained": passive_queue_drained,
                           "active_scan_completed": active_scan_completed,
-                          "coverage_status": "complete" if spider_completed and passive_queue_drained and (not active or active_scan_completed) else "partial",
+                          "coverage_status": "bounded_run_finished" if spider_completed and passive_queue_drained and (not active or active_scan_completed) and len(alerts) < MAX_ALERTS else "partial",
+                          "alerts_may_be_truncated": len(alerts) >= MAX_ALERTS,
+                          "coverage_note": "Completion describes the bounded job only. Unauthenticated discovery can miss application routes and API inputs; zero alerts or skipped rules do not prove security.",
                           "active_scan": bool(active), "attack_strength": "LOW" if active else None,
+                          "excluded_active_rule_ids": list(EXCLUDED_ACTIVE_RULES) if active else [],
                           "authenticated_scan": False}
     finally:
+        cleanup_failed = False
         if scan_id and not spider_completed:
             try:
                 await zap.get("spider/action/stop", allow_after_deadline=True, scanId=scan_id)
             except Exception:
-                pass
+                cleanup_failed = True
         if active_scan_id and not active_scan_completed:
             try:
                 await zap.get("ascan/action/stop", allow_after_deadline=True, scanId=active_scan_id)
             except Exception:
-                pass
+                cleanup_failed = True
         if policy_name:
             try:
                 await zap.get("ascan/action/removeScanPolicy", allow_after_deadline=True,
@@ -263,3 +296,5 @@ async def execute_zap_baseline(target_url: str, run_id: str, window_expires_at: 
             except Exception:
                 pass
         await zap.close()
+        if cleanup_failed:
+            raise ScannerCleanupFailed("Scanner stop could not be confirmed. Restart ZAP and backend before retrying.")

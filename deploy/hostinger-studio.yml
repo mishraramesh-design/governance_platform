@@ -1,0 +1,78 @@
+# Paste into the existing Hostinger Compose project to preserve mongo_data.
+# Set the same ZAP key in backend, ZAP command, and ZAP environment.
+# Deploy only after the main image publication workflow succeeds.
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+  backend:
+    image: mishramesh/governance-ai-studio-backend:main
+    pull_policy: always
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+      zap:
+        condition: service_healthy
+    environment:
+      MONGO_URL: "mongodb://mongo:27017/governance"
+      DB_NAME: "governance"
+      CORS_ORIGINS: "http://93.127.194.188:5021"
+      EDGE_SIGNING_SECRET: "REPLACE_WITH_A_LONG_RANDOM_SECRET"
+      ZAP_API_URL: "http://zap:8080"
+      ZAP_API_KEY: "REPLACE_WITH_A_DIFFERENT_LONG_RANDOM_SECRET"
+      OPENAI_API_KEY: ""
+      ANTHROPIC_API_KEY: ""
+      GEMINI_API_KEY: ""
+  zap:
+    image: ghcr.io/zaproxy/zaproxy:stable
+    restart: unless-stopped
+    command:
+      - zap.sh
+      - -Xmx1536m
+      - -daemon
+      - -host
+      - 0.0.0.0
+      - -port
+      - "8080"
+      - -config
+      - api.key=REPLACE_WITH_A_DIFFERENT_LONG_RANDOM_SECRET
+      - -config
+      - api.addrs.addr.name=.*
+      - -config
+      - api.addrs.addr.regex=true
+    shm_size: 512mb
+    mem_limit: 3g
+    cpus: 2.0
+    environment:
+      ZAP_API_KEY: "REPLACE_WITH_A_DIFFERENT_LONG_RANDOM_SECRET"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python3 -c 'import os,urllib.request;
+          urllib.request.urlopen(urllib.request.Request(
+          "http://127.0.0.1:8080/JSON/core/view/version/",
+          headers={"X-ZAP-API-Key":os.environ["ZAP_API_KEY"]}),timeout=5)'
+      interval: 15s
+      timeout: 10s
+      start_period: 60s
+      retries: 30
+    stop_grace_period: 30s
+  frontend:
+    image: mishramesh/governance-ai-studio-frontend:main
+    pull_policy: always
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "5021:80"
+volumes:
+  mongo_data:

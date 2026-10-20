@@ -26,6 +26,7 @@ jobs:
           python -m compileall -q backend
           python -m unittest discover -s backend/tests -p 'test_studio_planning_unit.py' -v
           python -m unittest discover -s backend/tests -p 'test_tool_adapters.py' -v
+          python -m unittest discover -s backend/tests -p 'test_web_scan_lifecycle.py' -v
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
