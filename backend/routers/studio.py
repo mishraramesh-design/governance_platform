@@ -353,7 +353,7 @@ async def start_web_security_scan(run_id: str, request: StudioWebScanRequest = S
     if datetime.now(timezone.utc) >= expires_at:
         raise HTTPException(403, "The authorized assessment window has expired.")
     try:
-        await validate_public_target(source["target_url"])
+        await validate_public_target(source["target_url"], allow_http=True)
         validate_scan_exclusions(source["target_url"], request.excluded_paths)
     except ValueError as exc:
         raise HTTPException(400, str(exc))

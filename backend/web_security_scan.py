@@ -20,15 +20,16 @@ MAX_ALERTS = 500
 MAX_ACTIVE_SCAN_SECONDS = 180
 
 
-async def validate_public_target(target_url: str):
+async def validate_public_target(target_url: str, *, allow_http=False):
     """Reject unsafe schemes, credentials, local names and non-public IPs.
 
     Resolution is checked before the scan to reduce SSRF risk. Production
     deployments should additionally enforce scanner egress network policy.
     """
     parsed = urlsplit((target_url or "").strip())
-    if parsed.scheme.lower() != "https" or not parsed.hostname:
-        raise ValueError("Web security scans require an HTTPS target URL.")
+    allowed_schemes = ("http", "https") if allow_http else ("https",)
+    if parsed.scheme.lower() not in allowed_schemes or not parsed.hostname:
+        raise ValueError("Web security scans require an HTTP or HTTPS target URL." if allow_http else "Web security scans require an HTTPS target URL.")
     if parsed.username or parsed.password or parsed.fragment:
         raise ValueError("Target URLs cannot contain credentials or fragments.")
     if parsed.query:
@@ -48,7 +49,7 @@ async def validate_public_target(target_url: str):
     if literal and not literal.is_global:
         raise ValueError("Private, loopback, link-local, multicast, and reserved targets are blocked.")
     try:
-        infos = await asyncio.get_running_loop().getaddrinfo(hostname, parsed.port or 443, type=socket.SOCK_STREAM)
+        infos = await asyncio.get_running_loop().getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
     except OSError as exc:
         raise ValueError("Target hostname did not resolve to a public address.") from exc
     addresses = {info[4][0] for info in infos}
@@ -92,9 +93,9 @@ def _in_scope(alert: dict, parsed):
     candidate = urlsplit(alert.get("url") or "")
     candidate_host = (candidate.hostname or "").lower()
     target_host = (parsed.hostname or "").lower()
-    candidate_port = candidate.port or (443 if candidate.scheme.lower() == "https" else None)
-    target_port = parsed.port or 443
-    if candidate.scheme.lower() != "https" or candidate_host != target_host or candidate_port != target_port:
+    candidate_port = candidate.port or (443 if candidate.scheme.lower() == "https" else 80)
+    target_port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    if candidate.scheme.lower() != parsed.scheme.lower() or candidate_host != target_host or candidate_port != target_port:
         return False
     root = parsed.path.rstrip("/") or "/"
     return candidate.path == root or root == "/" or candidate.path.startswith(root + "/")
@@ -122,7 +123,7 @@ async def execute_zap_baseline(target_url: str, run_id: str, window_expires_at: 
         window_expires_at = window_expires_at.replace(tzinfo=timezone.utc)
     if datetime.now(timezone.utc) >= window_expires_at:
         raise AuthorizationWindowExpired("authorization_window_expired")
-    parsed = await validate_public_target(target_url)
+    parsed = await validate_public_target(target_url, allow_http=True)
     exclusions = validate_scan_exclusions(target_url, excluded_paths)
     if datetime.now(timezone.utc) >= window_expires_at:
         raise AuthorizationWindowExpired("authorization_window_expired")

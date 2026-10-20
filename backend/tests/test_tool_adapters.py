@@ -88,6 +88,16 @@ class GovernanceToolAdapterTests(unittest.TestCase):
         failed = performance_assessment_plan_update("completed_with_failures", 2, 15, 900, 1.0, 13)
         self.assertEqual(failed["state"], "completed_with_failures")
 
+    def test_http_poc_scope_keeps_exact_scheme_port_and_exclusions(self):
+        scope, exclusions = build_zap_context_regexes(
+            urlsplit("http://93.127.194.188:5021/"), ["/api", "/logout"]
+        )
+        self.assertRegex("http://93.127.194.188:5021/studio", scope)
+        for outside in ("https://93.127.194.188:5021/studio", "http://93.127.194.188:8000/studio", "http://93.127.194.189:5021/"):
+            self.assertIsNone(re.match(scope, outside))
+        self.assertRegex("http://93.127.194.188:5021/api/auth?x=1", exclusions[0])
+        self.assertRegex("http://93.127.194.188:5021/logout?next=/", exclusions[1])
+
     def test_studio_logging_canary_is_redacted(self):
         result = run_log_canary_test()
         self.assertEqual(result["status"], "passed")
