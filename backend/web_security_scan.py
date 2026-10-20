@@ -10,6 +10,7 @@ from urllib.parse import unquote, urlsplit
 import httpx
 from detectors import mask_sensitive_text
 from scan_scope import build_zap_context_regexes
+from zap_policy import create_active_scan_policy
 
 
 MAX_SPIDER_SECONDS = 120
@@ -131,6 +132,7 @@ async def execute_zap_baseline(target_url: str, run_id: str, window_expires_at: 
     context_name = f"studio-{re.sub('[^a-zA-Z0-9_-]', '', run_id)[:32]}"
     scan_id = None
     active_scan_id = None
+    policy_name = None
     spider_completed = False
     active_scan_completed = False
     try:
@@ -182,14 +184,14 @@ async def execute_zap_baseline(target_url: str, run_id: str, window_expires_at: 
         if active:
             # ZAP active scanning sends attack requests. Keep it opt-in, low
             # strength, single-threaded, exact-context scoped, and time bounded.
-            await zap.get("ascan/action/setOptionAttackStrength", deadline=window_expires_at, String="LOW")
-            await zap.get("ascan/action/setOptionMaxScanDurationInMins", deadline=window_expires_at, Integer=3)
-            await zap.get("ascan/action/setOptionMaxRuleDurationInMins", deadline=window_expires_at, Integer=1)
-            await zap.get("ascan/action/setOptionThreadPerHost", deadline=window_expires_at, Integer=1)
+            from uuid import uuid4
+            policy_name = f"{context_name}-{uuid4().hex[:8]}"
+            await create_active_scan_policy(zap, policy_name, window_expires_at)
             if not context_id:
                 raise RuntimeError("zap_context_id_unavailable")
             active_scan = await zap.get("ascan/action/scan", deadline=window_expires_at, url=target_url,
-                                       recurse="true", inScopeOnly="true", contextId=context_id)
+                                       recurse="true", inScopeOnly="true", contextId=context_id,
+                                       scanPolicyName=policy_name)
             active_scan_id = str(active_scan["scan"])
             active_deadline = min(loop.time() + MAX_ACTIVE_SCAN_SECONDS,
                                   loop.time() + max(0, (window_expires_at - datetime.now(timezone.utc)).total_seconds()))
@@ -252,6 +254,12 @@ async def execute_zap_baseline(target_url: str, run_id: str, window_expires_at: 
         if active_scan_id and not active_scan_completed:
             try:
                 await zap.get("ascan/action/stop", allow_after_deadline=True, scanId=active_scan_id)
+            except Exception:
+                pass
+        if policy_name:
+            try:
+                await zap.get("ascan/action/removeScanPolicy", allow_after_deadline=True,
+                              scanPolicyName=policy_name)
             except Exception:
                 pass
         await zap.close()

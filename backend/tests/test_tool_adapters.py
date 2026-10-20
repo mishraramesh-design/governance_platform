@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlsplit
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from tool_adapters import (TOOL_SPECS, _PLAYWRIGHT_SMOKE, _assessment_argv, _k6_smoke_script, framework_inventory,
                            run_repository_static_tools)
@@ -13,9 +13,23 @@ from safe_logging import run_log_canary_test
 from models import StudioFrameworkAssessmentRequest
 from scan_scope import build_zap_context_regexes
 from studio_planning import performance_assessment_plan_update
+from zap_policy import create_active_scan_policy
 
 
 class GovernanceToolAdapterTests(unittest.TestCase):
+    def test_active_policy_uses_documented_zap_api_and_limits(self):
+        zap = SimpleNamespace(get=AsyncMock())
+        # Every awaited fake API call completes synchronously; no network loop is needed.
+        with self.assertRaises(StopIteration):
+            create_active_scan_policy(zap, "test-policy", "deadline").send(None)
+        calls = zap.get.await_args_list
+        self.assertEqual(calls[0].args, ("ascan/action/addScanPolicy",))
+        self.assertEqual(calls[0].kwargs, {
+            "deadline": "deadline", "scanPolicyName": "test-policy",
+            "attackStrength": "LOW", "alertThreshold": "MEDIUM",
+        })
+        self.assertEqual([call.kwargs["Integer"] for call in calls[1:]], [3, 1, 1])
+
     def test_inventory_covers_every_recommended_framework(self):
         self.assertEqual({item["id"] for item in framework_inventory()}, set(TOOL_SPECS))
 
