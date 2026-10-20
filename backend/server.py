@@ -1,4 +1,7 @@
 import logging
+from safe_logging import configure_safe_logging
+
+configure_safe_logging()
 
 from fastapi import FastAPI, APIRouter
 from starlette.middleware.cors import CORSMiddleware
@@ -42,7 +45,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -53,6 +55,11 @@ async def seed_on_startup():
             {"web_security_scan.status": {"$in": ["queued", "running"]}},
             {"$set": {"web_security_scan.status": "interrupted",
                       "web_security_scan.error": "Backend restarted during scan; review scanner status before retrying."}},
+        )
+        await db.studio_runs.update_many(
+            {"framework_assessment.status": {"$in": ["queued", "running"]}},
+            {"$set": {"framework_assessment.status": "interrupted",
+                      "framework_assessment.error": "Backend restarted during assessment; the test may have stopped early."}},
         )
         await seed_data.ensure_seeded(db)
         await seed_data.ensure_users_seeded(db)

@@ -104,20 +104,22 @@ def draft_test_cases(requirements):
 
 
 def framework_catalog():
-    """Framework choices for the governed plan; catalog entries are not claims of installation."""
-    return [
-        {"id": "semgrep-ce", "name": "Semgrep Community Edition", "stage": "code_review", "mode": "local_deterministic", "license": "LGPL-2.1", "status": "candidate_not_integrated", "note": "SAST rule engine; use with existing checks and review its language/rule coverage."},
-        {"id": "native-quality-tools", "name": "Language-native linters and type checkers", "stage": "code_quality", "mode": "local_deterministic", "license": "varies_by_language_and_tool", "status": "candidate_not_integrated", "note": "Select from detected languages (for example, Ruff/mypy or ESLint/TypeScript); pin versions and configure project-specific rules."},
-        {"id": "gitleaks", "name": "Gitleaks", "stage": "secret_scanning", "mode": "local_deterministic", "license": "MIT", "status": "candidate_not_integrated", "note": "Scan repository history and files for committed credentials."},
-        {"id": "trivy", "name": "Trivy", "stage": "supply_chain_and_artifacts", "mode": "local_deterministic", "license": "Apache-2.0", "status": "candidate_not_integrated", "note": "Scan dependencies, images, configuration and files for vulnerabilities, misconfiguration and secrets."},
-        {"id": "structured-log-policy", "name": "Structured logging allowlist and redaction policy", "stage": "log_prevention", "mode": "deterministic_application_control", "license": "project_owned_policy", "status": "design_candidate_not_integrated", "note": "Allow approved event fields, reject or redact sensitive fields, and prevent logging whole request/response objects or credentials."},
-        {"id": "log-canary-tests", "name": "Runtime log canary tests", "stage": "log_leak_verification", "mode": "deterministic_test", "license": "project_owned_tests", "status": "candidate_not_integrated", "note": "Inject synthetic canary credentials through error/authentication paths and assert they never appear in captured application or collector logs."},
-        {"id": "playwright", "name": "Playwright Test", "stage": "ui_functional", "mode": "local_deterministic", "license": "Apache-2.0", "status": "candidate_not_integrated", "note": "Browser functional tests; recorded interactions are drafts that need assertions and maintenance."},
-        {"id": "schemathesis", "name": "Schemathesis", "stage": "api_functional_and_robustness", "mode": "local_deterministic", "license": "MIT", "status": "candidate_not_integrated", "note": "Generate bounded API tests from an OpenAPI or GraphQL contract."},
-        {"id": "hypothesis", "name": "Hypothesis", "stage": "property_testing", "mode": "local_deterministic", "license": "MPL-2.0", "status": "candidate_not_integrated", "note": "Generate boundary and property-based inputs for Python code."},
-        {"id": "k6", "name": "Grafana k6", "stage": "performance_and_scalability", "mode": "local_deterministic", "license": "AGPL-3.0", "status": "candidate_not_integrated", "note": "Bounded smoke, load, stress, spike and soak tests; requires approved environment, workload ceiling and SLO thresholds."},
-    ]
+    """Return support descriptions plus live tool availability, never a pass claim."""
+    from tool_adapters import framework_inventory
 
+    notes = {
+        "semgrep-ce": "Uses the bundled local Semgrep ruleset; no remote rules are fetched.",
+        "native-quality-tools": "Ruff runs on Python sources. Other languages need a matching configured runner.",
+        "gitleaks": "Scans repository files; raw scanner output is discarded to avoid storing secret values.",
+        "trivy": "Scans filesystem vulnerabilities, misconfiguration and secrets; vulnerability coverage needs a database.",
+        "structured-log-policy": "Studio backend emits allow-listed JSON fields and redacts known sensitive patterns from rendered messages; pattern redaction is not a guarantee against all secrets.",
+        "log-canary-tests": "Synthetic canary exercises Studio's own logger filter; assessed-application logs still require its own instrumentation.",
+        "playwright": "A fixed unauthenticated Chromium smoke checks the approved path; no repo-authored browser scripts or credentials are executed.",
+        "schemathesis": "Runs bounded schema-driven requests against same-host OpenAPI; only use an owner-approved isolated staging API.",
+        "hypothesis": "Schemathesis uses Hypothesis-generated examples with a fixed seed and capped examples; separate arbitrary Hypothesis suites are not executed.",
+        "k6": "Fixed GET-only smoke with no redirects, 1-second pacing, max 3 virtual users and 30 seconds; not a capacity certification.",
+    }
+    return [{**item, "note": notes[item["id"]]} for item in framework_inventory()]
 
 def build_run_plan(has_repo, has_frs, has_target, has_logs, authorized):
     return [

@@ -1,6 +1,6 @@
 from typing import Optional, List, Any
 import re
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 TRIAGE_DECISIONS = ("accept", "dismiss", "escalate", "defer")
@@ -120,6 +120,66 @@ class GovernanceStudioRunRequest(BaseModel):
         if value is not None and len(value) > 2000:
             raise ValueError("authorization fields are limited to 2,000 characters")
         return value.strip() if value else value
+
+
+class StudioWebScanRequest(BaseModel):
+    mode: str = "passive"
+    active_scan_staging_confirmed: bool = False
+    excluded_paths: List[str] = Field(default_factory=list)
+
+    @field_validator("mode")
+    @classmethod
+    def _valid_web_scan_mode(cls, value):
+        if value not in ("passive", "active"):
+            raise ValueError("mode must be passive or active")
+        return value
+
+    @field_validator("excluded_paths")
+    @classmethod
+    def _valid_scan_exclusions(cls, value):
+        if len(value) > 50:
+            raise ValueError("at most 50 excluded URL paths are allowed")
+        normalized = []
+        for path in value:
+            path = (path or "").strip()
+            if not path:
+                continue
+            if not path.startswith("/") or "?" in path or "#" in path or "\\" in path or ".." in path.split("/"):
+                raise ValueError("excluded paths must be same-host URL paths without query strings, fragments, backslashes, or parent segments")
+            normalized.append(path)
+        return sorted(set(normalized))
+
+
+class StudioFrameworkAssessmentRequest(BaseModel):
+    """Explicitly bounded browser, API-contract or load smoke assessment."""
+    framework: str
+    staging_authorized: bool = False
+    openapi_url: Optional[str] = None
+    max_examples: int = Field(default=10, ge=1, le=25)
+    virtual_users: int = Field(default=2, ge=1, le=3)
+    duration_seconds: int = Field(default=15, ge=5, le=30)
+    max_p95_ms: int = Field(default=1000, ge=100, le=10000)
+    max_error_rate_percent: float = Field(default=1.0, ge=0, le=10)
+
+    @field_validator("framework")
+    @classmethod
+    def _framework_allowed(cls, value):
+        if value not in ("playwright", "schemathesis", "k6"):
+            raise ValueError("framework must be playwright, schemathesis, or k6")
+        return value
+
+    @field_validator("openapi_url")
+    @classmethod
+    def _openapi_url_valid(cls, value):
+        if value is not None:
+            from urllib.parse import urlsplit
+            parsed = urlsplit(value.strip())
+            if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise ValueError("openapi_url must be an HTTPS URL without credentials, query, or fragment")
+            if len(value) > 2048:
+                raise ValueError("openapi_url is too long")
+            return value.strip()
+        return value
 
 
 class RuntimeAnalyzeRequest(BaseModel):
