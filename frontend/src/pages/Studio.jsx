@@ -154,7 +154,7 @@ export default function Studio() {
         <div className="p-4 grid md:grid-cols-3 gap-3 text-xs">
           <div className="border border-gray-200 p-3"><div className="text-[10px] uppercase text-gray-400">Requirement candidates</div><strong>{result.requirements_candidate_count}</strong></div>
           <div className="border border-gray-200 p-3"><div className="text-[10px] uppercase text-gray-400">Runtime errors / 5xx</div><strong>{result.runtime_summary ? `${result.runtime_summary.error_lines} / ${result.runtime_summary.http_5xx_lines}` : "No logs supplied"}</strong></div>
-          <div className="border border-gray-200 p-3"><div className="text-[10px] uppercase text-gray-400">Target contact</div><strong>Not contacted</strong></div>
+          <div className="border border-gray-200 p-3"><div className="text-[10px] uppercase text-gray-400">Target contact</div><strong>{result.web_security_scan?.status === "completed" ? "Contacted by approved baseline" : ["queued", "running"].includes(result.web_security_scan?.status) ? "Baseline in progress" : result.web_security_scan?.status === "failed" ? "Contact status uncertain" : "Not contacted"}</strong></div>
         </div>
         <div className="px-4 pb-4 space-y-2">
           <h3 className="text-[10px] uppercase tracking-[0.2em] font-bold text-gray-500">Deterministic stage plan and gaps</h3>

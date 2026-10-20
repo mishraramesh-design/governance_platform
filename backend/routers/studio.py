@@ -104,7 +104,7 @@ async def _run_zap_for_record(run_id: str, record: dict, user_id: str):
             if datetime.now(timezone.utc) >= expires_at:
                 raise RuntimeError("authorization_window_expired")
             target = record["source"]["target_url"]
-            findings, metadata = await execute_zap_baseline(target, run_id)
+            findings, metadata = await execute_zap_baseline(target, run_id, expires_at)
             completed_at = datetime.now(timezone.utc).isoformat()
             result = {
                 "status": "completed", "mode": "unauthenticated_passive_baseline",
@@ -121,22 +121,26 @@ async def _run_zap_for_record(run_id: str, record: dict, user_id: str):
                 "finding_count": len(findings), "authorization_reference": record["source"]["authorization_reference"],
             })
             result["ledger"] = {"seq": entry["seq"], "hash": entry["hash"], "entry_id": entry["id"]}
-            plan = record.get("plan", [])
-            for step in plan:
-                if step.get("id") == "WEB-01":
-                    step.update({"state": "completed_passive_scan", "evidence": f"{len(findings)} OWASP ZAP passive alerts; ledger {entry['seq']}"})
-            await db.studio_runs.update_one({"id": run_id}, {"$set": {"web_security_scan": result, "plan": plan,
-                                                                          "status": "partially_assessed"}})
+            await db.studio_runs.update_one(
+                {"id": run_id},
+                {"$set": {"web_security_scan": result, "status": "partially_assessed",
+                          "plan.$[step].state": "completed_passive_scan",
+                          "plan.$[step].evidence": f"{len(findings)} OWASP ZAP passive alerts; ledger {entry['seq']}"}},
+                array_filters=[{"step.id": "WEB-01"}],
+            )
         except Exception as exc:
             logger.error("ZAP baseline failed for studio run %s (%s)", run_id, type(exc).__name__)
-            failure = {"status": "failed", "failed_at": datetime.now(timezone.utc).isoformat(),
+            failure = {"status": "failed", "queued_at": (record.get("web_security_scan") or {}).get("queued_at"),
+                       "failed_at": datetime.now(timezone.utc).isoformat(),
                        "error": "Scanner request failed. Check scanner availability and backend logs.",
                        "error_code": type(exc).__name__, "mode": "unauthenticated_passive_baseline"}
-            plan = record.get("plan", [])
-            for step in plan:
-                if step.get("id") == "WEB-01":
-                    step.update({"state": "scanner_execution_failed", "evidence": "No scan findings recorded; inspect scanner availability before retrying."})
-            await db.studio_runs.update_one({"id": run_id}, {"$set": {"web_security_scan": failure, "plan": plan}})
+            await db.studio_runs.update_one(
+                {"id": run_id},
+                {"$set": {"web_security_scan": failure,
+                          "plan.$[step].state": "scanner_execution_failed",
+                          "plan.$[step].evidence": "No scan findings recorded; inspect scanner availability before retrying."}},
+                array_filters=[{"step.id": "WEB-01"}],
+            )
 
 
 def _track_web_scan_task(task):
@@ -175,7 +179,7 @@ async def start_web_security_scan(run_id: str, user=Depends(auth.get_current_use
         previous = (record or {}).get("web_security_scan") or {}
         if previous.get("status") in ("queued", "running"):
             raise HTTPException(409, "A web security scan is already queued or running for this assessment.")
-        last_scan = previous.get("completed_at") or previous.get("queued_at")
+        last_scan = previous.get("completed_at") or previous.get("failed_at") or previous.get("queued_at")
         if last_scan:
             try:
                 last_scan_at = datetime.fromisoformat(last_scan)
