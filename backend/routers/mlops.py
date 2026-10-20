@@ -176,7 +176,7 @@ async def metrics():
     triage_total = await db.triage_decisions.count_documents({})
     triage_dismiss = await db.triage_decisions.count_documents({"decision": "dismiss"})
     total_calls = await db.llm_calls.count_documents({})
-    zero_calls = await db.llm_calls.count_documents({"mode": {"$in": ["zero-llm", "deterministic", "zero-llm-error-fallback", "sovereignty-blocked"]}})
+    zero_calls = await db.llm_calls.count_documents({"mode": {"$in": ["zero-llm", "deterministic", "zero-llm-error-fallback", "sovereignty-blocked", "budget-exhausted"]}})
 
     def pct(n, d):
         return round(n / d * 100, 1) if d else 0.0

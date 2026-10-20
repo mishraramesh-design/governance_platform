@@ -1,0 +1,48 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:?Set MONGO_ROOT_USERNAME in .env}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?Set MONGO_ROOT_PASSWORD in .env}
+      MONGO_INITDB_DATABASE: ${DB_NAME:-governance}
+      MONGO_APP_USERNAME: ${MONGO_APP_USERNAME:?Set MONGO_APP_USERNAME in .env}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?Set MONGO_APP_PASSWORD in .env}
+    volumes:
+      - mongo_data:/data/db
+      - ./deploy/init-mongo.js:/docker-entrypoint-initdb.d/01-init-app-user.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    image: ${DOCKERHUB_USERNAME:-local}/governance-ai-studio-backend:latest
+    restart: unless-stopped
+    environment:
+      MONGO_URL: mongodb://${MONGO_APP_USERNAME}:${MONGO_APP_PASSWORD}@mongo:27017/${DB_NAME:-governance}?authSource=${DB_NAME:-governance}
+      DB_NAME: ${DB_NAME:-governance}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      EDGE_SIGNING_SECRET: ${EDGE_SIGNING_SECRET:?Set EDGE_SIGNING_SECRET in .env}
+      EMERGENT_LLM_KEY: ${EMERGENT_LLM_KEY:-}
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    image: ${DOCKERHUB_USERNAME:-local}/governance-ai-studio-frontend:latest
+    restart: unless-stopped
+    ports:
+      - "${STUDIO_PORT:-8080}:80"
+    depends_on:
+      - backend
+
+volumes:
+  mongo_data:

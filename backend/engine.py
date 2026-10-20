@@ -125,7 +125,8 @@ async def handle_requirement_quality(db, project, event, source_ref):
         remedy = "No action required - requirement meets baseline quality bar."
         if verdict == "FAIL":
             masked = f"Requirement {r['req_id']}: \"{r['text']}\". Detected issues: {'; '.join(issues)}. Propose one testable, measurable rewrite."
-            gw = await gateway.complete_agent("A02", "requirement_rewrite", masked, level=1, db=db)
+            gw = await gateway.complete_agent("A02", "requirement_rewrite", masked, level=1, db=db,
+                                              run_id=event["id"], project_id=project["id"])
             remedy = gw["text"]
             method = "model-assisted (A02)" if gw["mode"] == "llm" else "rule-based"
         findings.append(build_finding(
@@ -464,15 +465,27 @@ async def apply_level2(db, control, finding):
         # Route through the paired L2 agent's persona when it uses a model; otherwise
         # fall back to the independent-reviewer profile (a different model family).
         if l2_agent and l2_agent.get("uses_llm"):
-            gw = await gateway.complete_agent(l2_id, "l2_independent_review", prompt, level=2, db=db, tier=finding.get("tier"))
+            gw = await gateway.complete_agent(l2_id, "l2_independent_review", prompt, level=2, db=db,
+                                              tier=finding.get("tier"), run_id=finding.get("event_id"),
+                                              project_id=finding.get("project_id"))
         else:
-            gw = await gateway.complete("l2_independent_review", prompt, "checker", db=db)
+            gw = await gateway.complete("l2_independent_review", prompt, "checker", db=db,
+                                        run_id=finding.get("event_id"), project_id=finding.get("project_id"))
         l2_text = gw["text"]
-        disagree = "disagree" in l2_text.lower()
         finding["l2_agent_id"] = l2_id
         finding["l2_model"] = gw.get("model_used")
-        finding["level2_status"] = "disagreement_pending_adjudication" if disagree else "confirmed_by_independent_model"
         finding["level2_narrative"] = l2_text
+        # A fallback narrative is not an independent review. Only a live model
+        # response with a recognized first-token decision can confirm or disagree.
+        decision = re.match(r"^\s*(AGREE|DISAGREE)\b", l2_text or "", re.IGNORECASE)
+        if gw.get("mode") != "llm":
+            finding["level2_status"] = "not_assessed_model_unavailable"
+            return
+        if not decision:
+            finding["level2_status"] = "not_assessed_invalid_response"
+            return
+        disagree = decision.group(1).upper() == "DISAGREE"
+        finding["level2_status"] = "disagreement_pending_adjudication" if disagree else "confirmed_by_independent_model"
         if disagree:
             await db.adjudications.insert_one({
                 "id": str(uuid4()), "finding_id": finding["id"], "project_id": finding["project_id"],
@@ -530,7 +543,8 @@ async def generate_author_report(db, project, event, findings):
         by_author.setdefault(author, []).append(f)
 
     masked_summary = "; ".join(f"{f['control_name']}: {f['verdict']} ({f['severity']})" for f in findings[:20]) or "No findings for this event."
-    gw = await gateway.complete_agent("A22", "author_report_narrative", masked_summary, level=1, db=db)
+    gw = await gateway.complete_agent("A22", "author_report_narrative", masked_summary, level=1, db=db,
+                                      run_id=event["id"], project_id=project["id"])
 
     sections = []
     for author, items in by_author.items():
@@ -559,7 +573,8 @@ async def generate_team_lead_report(db, project, event, findings):
     hotspots = sorted(hotspot_counts.items(), key=lambda x: -x[1])[:5]
 
     masked_summary = f"Severity breakdown: {severity_counts}. Verdict breakdown: {verdict_counts}. Top hotspots: {hotspots}."
-    gw = await gateway.complete_agent("A22", "team_lead_report_narrative", masked_summary, level=1, db=db)
+    gw = await gateway.complete_agent("A22", "team_lead_report_narrative", masked_summary, level=1, db=db,
+                                      run_id=event["id"], project_id=project["id"])
 
     sections = [
         {"heading": "Severity Breakdown", "body": [f"{k}: {v}" for k, v in severity_counts.items()] or ["No findings"]},

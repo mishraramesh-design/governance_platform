@@ -1,4 +1,5 @@
 from typing import Optional, List, Any
+import re
 from pydantic import BaseModel, field_validator, model_validator
 
 
@@ -52,6 +53,73 @@ class RepoAuditRequest(BaseModel):
     github_url: str
     name: Optional[str] = None
     git_token: Optional[str] = None
+
+
+class GovernanceStudioRunRequest(BaseModel):
+    name: str
+    github_url: Optional[str] = None
+    target_url: Optional[str] = None
+    authorization_confirmed: bool = False
+    authorization_owner: Optional[str] = None
+    authorization_reference: Optional[str] = None
+    authorization_scope: Optional[str] = None
+    duration_hours: int = 2
+    frs_text: Optional[str] = None
+    frs_filename: Optional[str] = None
+    runtime_logs: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def _name_required(cls, value):
+        value = (value or "").strip()
+        if not value or len(value) > 120:
+            raise ValueError("name must be between 1 and 120 characters")
+        return value
+
+    @field_validator("github_url")
+    @classmethod
+    def _github_url(cls, value):
+        if value is None or not value.strip():
+            return None
+        value = value.strip().rstrip("/")
+        if not re.fullmatch(r"https://github\.com/[\w.\-]+/[\w.\-]+", value):
+            raise ValueError("github_url must be an HTTPS GitHub repository URL")
+        return value
+
+    @field_validator("target_url")
+    @classmethod
+    def _target_url(cls, value):
+        if value is None or not value.strip():
+            return None
+        from urllib.parse import urlsplit
+        value = value.strip()
+        parsed = urlsplit(value)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("target_url must be an HTTP(S) URL without embedded credentials")
+        if len(value) > 2048:
+            raise ValueError("target_url is too long")
+        return value
+
+    @field_validator("duration_hours")
+    @classmethod
+    def _duration_bounds(cls, value):
+        if value < 1 or value > 168:
+            raise ValueError("duration_hours must be between 1 and 168")
+        return value
+
+    @field_validator("frs_text", "runtime_logs")
+    @classmethod
+    def _bounded_inputs(cls, value):
+        if value is not None and len(value) > 2_000_000:
+            raise ValueError("input is limited to 2 MB")
+        return value
+
+    @field_validator("authorization_owner", "authorization_reference", "authorization_scope", "frs_filename")
+    @classmethod
+    def _bounded_scope_fields(cls, value):
+        if value is not None and len(value) > 2000:
+            raise ValueError("authorization fields are limited to 2,000 characters")
+        return value.strip() if value else value
 
 
 class RuntimeAnalyzeRequest(BaseModel):

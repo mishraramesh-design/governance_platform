@@ -1,8 +1,8 @@
 """Deterministic Harness API: agent personas, four-role capability model
 (maker/checker/security/verifier), on-prem/custom endpoints, Zero-LLM toggle,
 a live sandbox, the agent-flow graph and the llm_calls audit log."""
-from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Depends, Query
+from pydantic import BaseModel, Field
 
 from database import db
 import gateway
@@ -16,13 +16,16 @@ _SECRET = "__stored__"  # placeholder returned instead of a real key
 
 class ConfigUpdate(BaseModel):
     capability_profiles: dict
+    project_id: str | None = None
     zero_llm_mode: bool = False
+    max_llm_calls_per_run: int = Field(default=2, ge=0, le=100)
     sovereignty: dict | None = None
 
 
 class SandboxRun(BaseModel):
     agent_id: str
     masked_input: str
+    project_id: str | None = None
     level: int = 1
     tier: str | None = None
 
@@ -58,9 +61,9 @@ async def two_level_model():
 
 
 @router.get("/flow")
-async def agent_flow():
+async def agent_flow(project_id: str | None = Query(None)):
     """Agent-flow graph: event triggers -> L1 agents (by role) -> L2 reviewers -> human gates."""
-    cfg = await gateway.get_config(db)
+    cfg = await gateway.get_config(db, project_id)
     role_model = {r: (p and f"{p['provider']}/{p['model']}") for r, p in cfg["capability_profiles"].items()}
     nodes = []
     for a in agent_profiles.AGENT_LIST:
@@ -70,7 +73,9 @@ async def agent_flow():
             "l2_agent_id": a["l2_agent_id"], "model": role_model.get(a["harness_role"]),
         })
     edges = [{"from": a["id"], "to": a["l2_agent_id"]} for a in agent_profiles.AGENT_LIST if a["l2_agent_id"]]
-    return {"nodes": nodes, "edges": edges, "roles": agent_profiles.HARNESS_ROLES, "role_model": role_model}
+    return {"nodes": nodes, "edges": edges, "roles": agent_profiles.HARNESS_ROLES,
+            "role_model": role_model, "project_id": project_id,
+            "max_llm_calls_per_run": cfg["max_llm_calls_per_run"]}
 
 
 @router.get("/agents/{agent_id}")
@@ -92,12 +97,14 @@ def _public_profile(prof):
 
 
 @router.get("/config")
-async def get_config():
-    cfg = await gateway.get_config(db)
+async def get_config(project_id: str | None = Query(None)):
+    cfg = await gateway.get_config(db, project_id)
     profiles = {k: _public_profile(v) for k, v in cfg["capability_profiles"].items()}
     return {
         "capability_profiles": profiles,
         "zero_llm_mode": cfg["zero_llm_mode"],
+        "max_llm_calls_per_run": cfg["max_llm_calls_per_run"],
+        "project_id": project_id,
         "sovereignty": cfg["sovereignty"],
         "available_models": gateway.AVAILABLE_MODELS,
         "providers": list(gateway.AVAILABLE_MODELS.keys()),
@@ -108,7 +115,7 @@ async def get_config():
 
 @router.put("/config")
 async def put_config(body: ConfigUpdate):
-    current = await gateway.get_config(db)
+    current = await gateway.get_config(db, body.project_id)
     incoming = dict(body.capability_profiles or {})
     result = {}
     for name in agent_profiles.HARNESS_ROLES:
@@ -142,20 +149,24 @@ async def put_config(body: ConfigUpdate):
             "local_only": bool(prof.get("local_only", False)),
         }
     result["none"] = None
-    saved = await gateway.save_config(db, result, body.zero_llm_mode, body.sovereignty)
+    saved = await gateway.save_config(db, result, body.zero_llm_mode, body.sovereignty,
+                                      body.max_llm_calls_per_run, project_id=body.project_id)
     return {"capability_profiles": {k: _public_profile(v) for k, v in saved["capability_profiles"].items()},
-            "zero_llm_mode": saved["zero_llm_mode"], "sovereignty": saved["sovereignty"]}
+            "zero_llm_mode": saved["zero_llm_mode"], "max_llm_calls_per_run": saved["max_llm_calls_per_run"],
+            "sovereignty": saved["sovereignty"], "project_id": body.project_id}
 
 
 @router.post("/sandbox")
 async def sandbox(body: SandboxRun):
     if body.level not in (1, 2):
         raise HTTPException(400, "level must be 1 or 2")
-    return await gateway.complete_agent(body.agent_id, "sandbox_assessment", body.masked_input, body.level, db=db, tier=body.tier)
+    return await gateway.complete_agent(body.agent_id, "sandbox_assessment", body.masked_input, body.level,
+                                        db=db, tier=body.tier, project_id=body.project_id)
 
 
 @router.get("/llm-calls")
-async def llm_calls(limit: int = 50):
-    calls = await db.llm_calls.find({}, {"_id": 0}).sort("timestamp", -1).to_list(limit)
-    total = await db.llm_calls.count_documents({})
+async def llm_calls(limit: int = 50, project_id: str | None = Query(None)):
+    q = {"project_id": project_id} if project_id else {}
+    calls = await db.llm_calls.find(q, {"_id": 0}).sort("timestamp", -1).to_list(limit)
+    total = await db.llm_calls.count_documents(q)
     return {"calls": calls, "total": total}

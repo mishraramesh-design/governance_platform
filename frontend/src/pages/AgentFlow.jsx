@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import api from "../lib/api";
 import { PageHeader } from "../components/PageHeader";
+import { useProject } from "../context/ProjectContext";
 
 const ROLE_COLOR = {
   maker: "border-l-[#FFE600] bg-[#FFFBe6]",
@@ -46,7 +47,8 @@ function AgentCard({ id, name, role, model, uses_llm, sub }) {
 
 export default function AgentFlow() {
   const [stageFilter, setStageFilter] = useState("");
-  const { data: flow } = useQuery({ queryKey: ["agent-flow"], queryFn: () => api.get("/harness/flow").then((r) => r.data) });
+  const { projectId } = useProject();
+  const { data: flow } = useQuery({ queryKey: ["agent-flow", projectId], queryFn: () => api.get("/harness/flow", { params: { project_id: projectId || undefined } }).then((r) => r.data) });
   const { data: twoLevel } = useQuery({ queryKey: ["two-level"], queryFn: () => api.get("/harness/two-level-model").then((r) => r.data) });
 
   const nodeById = {};

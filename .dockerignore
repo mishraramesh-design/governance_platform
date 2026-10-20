@@ -1,0 +1,14 @@
+.git
+.github
+.emergent
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/node_modules
+**/build
+**/dist
+backend/.env
+.env
+.env.*
+memory/test_credentials.md
+test_reports

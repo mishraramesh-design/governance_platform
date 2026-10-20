@@ -4,6 +4,7 @@ import api from "../lib/api";
 import { PageHeader } from "../components/PageHeader";
 import { Switch } from "../components/ui/switch";
 import { toast } from "sonner";
+import { useProject } from "../context/ProjectContext";
 
 const ROLE_META = {
   maker: { label: "Maker", note: "Generative authoring — proposes findings, requirement rewrites, scenarios and report narrative." },
@@ -126,17 +127,24 @@ function RoleEditor({ name, profile, config, roleCount, onChange }) {
 
 export default function ModelSettings() {
   const qc = useQueryClient();
-  const { data: config, isLoading } = useQuery({ queryKey: ["harness-config"], queryFn: () => api.get("/harness/config").then((r) => r.data) });
+  const { projectId, currentProject } = useProject();
+  const { data: config, isLoading } = useQuery({ queryKey: ["harness-config", projectId], queryFn: () => api.get("/harness/config", { params: { project_id: projectId || undefined } }).then((r) => r.data) });
   const { data: agentsData } = useQuery({ queryKey: ["harness-agents"], queryFn: () => api.get("/harness/agents").then((r) => r.data) });
-  const { data: callsData } = useQuery({ queryKey: ["llm-calls"], queryFn: () => api.get("/harness/llm-calls?limit=25").then((r) => r.data), refetchInterval: 5000 });
+  const { data: callsData } = useQuery({ queryKey: ["llm-calls", projectId], queryFn: () => api.get("/harness/llm-calls", { params: { limit: 25, project_id: projectId || undefined } }).then((r) => r.data), refetchInterval: 5000 });
 
   const [profiles, setProfiles] = useState(null);
   const [zeroLlm, setZeroLlm] = useState(false);
+  const [maxCallsPerRun, setMaxCallsPerRun] = useState(2);
   const [sovereignty, setSovereignty] = useState(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (config) { setProfiles(config.capability_profiles); setZeroLlm(config.zero_llm_mode); setSovereignty(config.sovereignty); }
+    if (config) {
+      setProfiles(config.capability_profiles);
+      setZeroLlm(config.zero_llm_mode);
+      setSovereignty(config.sovereignty);
+      setMaxCallsPerRun(config.max_llm_calls_per_run ?? 2);
+    }
   }, [config]);
 
   const onChange = (name, prof) => setProfiles((p) => ({ ...p, [name]: prof }));
@@ -144,8 +152,8 @@ export default function ModelSettings() {
   const save = async () => {
     setSaving(true);
     try {
-      await api.put("/harness/config", { capability_profiles: profiles, zero_llm_mode: zeroLlm, sovereignty });
-      qc.invalidateQueries({ queryKey: ["harness-config"] });
+      await api.put("/harness/config", { capability_profiles: profiles, zero_llm_mode: zeroLlm, sovereignty, max_llm_calls_per_run: maxCallsPerRun, project_id: projectId || null });
+      qc.invalidateQueries({ queryKey: ["harness-config", projectId] });
       qc.invalidateQueries({ queryKey: ["agent-flow"] });
       toast.success("Gateway configuration saved");
     } catch (e) {
@@ -160,7 +168,7 @@ export default function ModelSettings() {
     <div data-testid="model-settings-page">
       <PageHeader
         title="Model Gateway Settings"
-        subtitle="Four capability roles — Maker, Checker, Security, Verifier — each mapped to a model. Point any role at a cloud provider (Emergent key or your own) or an on-prem, OpenAI-compatible endpoint. Every agent and task call routes through this single gateway."
+        subtitle={`${currentProject ? `${currentProject.name} · ` : "Default profile · "}Four model capability roles route advisory tasks across configured providers. Deterministic controls establish findings first; language models help interpret and explain. Run-level call limits cap model use, and model output alone never establishes a control verdict.`}
       />
 
       <div className="mb-4 text-[11px] text-gray-500 bg-gray-50 border-l-4 border-[#FFE600] px-3 py-2" data-testid="key-storage-note">
@@ -194,6 +202,26 @@ export default function ModelSettings() {
           <p className="text-xs text-gray-500 max-w-xl">Disables all generation. Every agent and report falls back to deterministic output only.</p>
         </div>
         <Switch data-testid="zero-llm-switch" checked={zeroLlm} onCheckedChange={setZeroLlm} />
+      </div>
+
+      <div className="border border-gray-200 p-4 mb-6" data-testid="llm-budget-control">
+        <label className="flex flex-wrap items-center justify-between gap-4">
+          <span>
+            <span className="block font-[Chivo] font-bold text-sm">Maximum model calls per governance run</span>
+            <span className="mt-1 block max-w-2xl text-xs text-gray-500">When the limit is reached, deterministic checks continue. Model-only work is recorded as not assessed instead of silently treated as reviewed. Set to zero for deterministic-only runs.</span>
+          </span>
+          <input
+            data-testid="llm-budget-input"
+            type="number"
+            min="0"
+            max="100"
+            step="1"
+            value={maxCallsPerRun}
+            onChange={(e) => setMaxCallsPerRun(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+            className="w-24 border border-gray-300 px-3 py-2 text-sm font-mono"
+          />
+        </label>
+        <p className="mt-2 text-[11px] text-gray-400">This controls call count, not a guaranteed dollar spend. Exact token and provider pricing metering is a later gateway enhancement.</p>
       </div>
 
       <button data-testid="save-config-btn" onClick={save} disabled={saving}
