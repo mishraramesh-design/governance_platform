@@ -2,7 +2,7 @@
 
 Capability roles (maker / checker / security / verifier) are configurable per
 deployment and may each point at a cloud provider (OpenAI / Anthropic / Gemini,
-via the Emergent universal key or a user-supplied key) OR an on-prem,
+via a provider-specific or user-supplied key) OR an on-prem,
 OpenAI-COMPATIBLE endpoint (custom base_url + key). Each role also carries a
 "local_only" flag that forbids any external call.
 
@@ -20,16 +20,18 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from dotenv import load_dotenv
-from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
-from openai import AsyncOpenAI
+import httpx
 
 import agent_profiles
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+PROVIDER_API_KEYS = {
+    "openai": os.environ.get("OPENAI_API_KEY"),
+    "anthropic": os.environ.get("ANTHROPIC_API_KEY"),
+    "gemini": os.environ.get("GEMINI_API_KEY"),
+}
 
 # Set True by the seeder so bulk demo generation stays fast and free (deterministic).
 FORCE_ZERO_LLM = False
@@ -167,7 +169,7 @@ def _runnable(profile: dict):
             return False, "zero-llm", None, "custom provider missing base_url"
         return True, None, profile.get("api_key") or "sk-local", None
     # cloud provider
-    key = profile.get("api_key") or EMERGENT_LLM_KEY or (OPENAI_API_KEY if provider == "openai" else None)
+    key = profile.get("api_key") or PROVIDER_API_KEYS.get(provider)
     if not key:
         return False, "zero-llm", None, "no api key"
     return True, None, key, None
@@ -176,23 +178,49 @@ def _runnable(profile: dict):
 async def _run_llm(system_message: str, masked_input: str, profile: dict, key: str, session_tag: str) -> str:
     provider = profile["provider"]
     model = profile["model"]
-    if provider == "custom":
-        client = AsyncOpenAI(base_url=profile["base_url"], api_key=key)
-        resp = await client.chat.completions.create(
-            model=model,
-            messages=[{"role": "system", "content": system_message}, {"role": "user", "content": masked_input or ""}],
-            temperature=0,
-        )
-        return (resp.choices[0].message.content or "").strip()
-    chat = LlmChat(api_key=key, session_id=f"govplat-{session_tag}-{int(time.time()*1000)}",
-                   system_message=system_message).with_model(provider, model)
-    full = ""
-    async for ev in chat.stream_message(UserMessage(text=masked_input or "")):
-        if isinstance(ev, TextDelta):
-            full += ev.content
-        elif isinstance(ev, StreamDone):
-            break
-    return full.strip()
+    timeout = httpx.Timeout(60.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        if provider in ("openai", "custom"):
+            base_url = profile.get("base_url", "") if provider == "custom" else "https://api.openai.com/v1"
+            endpoint = base_url.rstrip("/")
+            if not endpoint.endswith("/chat/completions"):
+                endpoint += "/chat/completions"
+            response = await client.post(
+                endpoint,
+                headers={"Authorization": f"Bearer {key}"},
+                json={"model": model, "temperature": 0,
+                      "messages": [{"role": "system", "content": system_message},
+                                   {"role": "user", "content": masked_input or ""}]},
+            )
+            response.raise_for_status()
+            return (response.json().get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+
+        if provider == "anthropic":
+            response = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+                json={"model": model, "max_tokens": 1024, "temperature": 0,
+                      "system": system_message,
+                      "messages": [{"role": "user", "content": masked_input or ""}]},
+            )
+            response.raise_for_status()
+            return "".join(block.get("text", "") for block in response.json().get("content", [])
+                           if block.get("type") == "text").strip()
+
+        if provider == "gemini":
+            response = await client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                headers={"x-goog-api-key": key},
+                json={"systemInstruction": {"parts": [{"text": system_message}]},
+                      "contents": [{"role": "user", "parts": [{"text": masked_input or ""}]}],
+                      "generationConfig": {"temperature": 0}},
+            )
+            response.raise_for_status()
+            candidates = response.json().get("candidates", [])
+            parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
+            return "".join(part.get("text", "") for part in parts).strip()
+
+    raise ValueError(f"Unsupported provider: {provider}")
 
 
 async def _dispatch(system, masked_input, profile, task, base_record, db, zero_text,

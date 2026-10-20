@@ -85,7 +85,7 @@ function RoleEditor({ name, profile, config, roleCount, onChange }) {
 
       <label className="block mb-2">
         <span className="text-[10px] uppercase tracking-wider text-gray-400">
-          API key {profile?.api_key_set ? "· stored" : config.emergent_key_available && !isCustom ? "· optional (falls back to Emergent key)" : ""}
+          API key {profile?.api_key_set ? "· stored" : config.provider_env_keys_available?.[profile?.provider] && !isCustom ? "· optional (uses server environment key)" : ""}
         </span>
         <div className="flex gap-1.5 mt-0.5">
           <input
@@ -93,7 +93,7 @@ function RoleEditor({ name, profile, config, roleCount, onChange }) {
             type="password"
             value={profile?.api_key === "__stored__" || profile?.api_key === "__clear__" ? "" : (profile?.api_key || "")}
             onChange={(e) => onChange(name, { ...profile, api_key: e.target.value })}
-            placeholder={profile?.api_key === "__clear__" ? "will revert to Emergent key on save" : profile?.api_key_set ? "•••••••• (leave blank to keep)" : "paste key…"}
+            placeholder={profile?.api_key === "__clear__" ? "will use server environment key if configured" : profile?.api_key_set ? "•••••••• (leave blank to keep)" : "paste key…"}
             className="flex-1 text-sm border border-gray-300 px-2 py-1.5 bg-white font-mono focus:outline-none focus:ring-2 focus:ring-[#FFE600]"
           />
           {(profile?.api_key_set || (profile?.api_key && profile.api_key !== "__clear__")) && (
@@ -103,7 +103,7 @@ function RoleEditor({ name, profile, config, roleCount, onChange }) {
               onClick={() => onChange(name, { ...profile, api_key: "__clear__", api_key_set: false })}
               className="text-[10px] uppercase font-bold border border-gray-400 px-2 hover:border-black hover:text-black text-gray-600"
             >
-              Clear / use Emergent key
+              Clear / use server environment key
             </button>
           )}
         </div>
