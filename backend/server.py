@@ -8,6 +8,7 @@ from database import db
 import seed_data
 from routers import catalog, projects, events, reports, assurance, dashboard, harness, mlops
 from routers import auth as auth_routes, admin as admin_routes, routing as routing_routes
+from routers import studio as studio_routes
 
 app = FastAPI(title="SDLC Governance & Assurance Platform")
 api_router = APIRouter(prefix="/api")
@@ -29,6 +30,7 @@ api_router.include_router(mlops.router)
 api_router.include_router(auth_routes.router)
 api_router.include_router(admin_routes.router)
 api_router.include_router(routing_routes.router)
+api_router.include_router(studio_routes.router)
 
 app.include_router(api_router)
 

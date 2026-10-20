@@ -26,6 +26,14 @@ async def get_dashboard(project_id: Optional[str] = Query(None)):
     trend_series = [{"date": k, "events": v} for k, v in sorted(trend.items())]
 
     triage_queue_count = await db.findings.count_documents({**q, "status": "open", "verdict": "FAIL"})
+    finding_projection = {"_id": 0, "id": 1, "control_name": 1, "severity": 1, "reason": 1, "created_at": 1}
+    priority_findings = await db.findings.find(
+        {**q, "status": "open", "verdict": "FAIL", "severity": "critical"}, finding_projection,
+    ).sort("created_at", -1).to_list(5)
+    if len(priority_findings) < 5:
+        priority_findings.extend(await db.findings.find(
+            {**q, "status": "open", "verdict": "FAIL", "severity": "high"}, finding_projection,
+        ).sort("created_at", -1).to_list(5 - len(priority_findings)))
     ledger_status = await ledger_mod.verify_integrity(db)
 
     coverage_pct = None
@@ -52,4 +60,5 @@ async def get_dashboard(project_id: Optional[str] = Query(None)):
         "ledger_status": ledger_status, "total_projects": total_projects, "total_agents": total_agents,
         "total_controls": total_controls, "pending_adjudications": pending_adjudications,
         "total_findings": len(findings),
+        "priority_findings": priority_findings,
     }

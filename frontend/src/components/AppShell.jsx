@@ -6,7 +6,7 @@ import api from "../lib/api";
 import { AdvisoryBadge } from "./StatusPill";
 
 const NAV = [
-  { group: "Overview", items: [{ to: "/", label: "Dashboard", testId: "nav-dashboard" }] },
+  { group: "Overview", items: [{ to: "/", label: "Dashboard", testId: "nav-dashboard" }, { to: "/studio", label: "Governance AI Studio", testId: "nav-studio" }] },
   {
     group: "Governance",
     items: [

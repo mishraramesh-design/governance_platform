@@ -28,6 +28,7 @@ import RepoAudit from "@/pages/RepoAudit";
 import Runtime from "@/pages/Runtime";
 import About from "@/pages/About";
 import Admin from "@/pages/Admin";
+import Studio from "@/pages/Studio";
 
 function App() {
   return (
@@ -37,6 +38,7 @@ function App() {
           <AppShell>
             <Routes>
               <Route path="/" element={<Dashboard />} />
+              <Route path="/studio" element={<Studio />} />
               <Route path="/projects" element={<Projects />} />
               <Route path="/agents" element={<Agents />} />
               <Route path="/harness" element={<AgentHarness />} />

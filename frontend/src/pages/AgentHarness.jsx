@@ -6,6 +6,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "../components/ui/dialog";
 import { toast } from "sonner";
+import { useProject } from "../context/ProjectContext";
 
 const CLASS_ORDER = ["LLM-core", "Hybrid", "Service"];
 const CLASS_STYLE = {
@@ -23,6 +24,7 @@ function ClassChip({ value }) {
 }
 
 function Sandbox({ agent }) {
+  const { projectId } = useProject();
   const [input, setInput] = useState(
     `Masked requirement: "The system shall authenticate a user within ** seconds for **.*% of attempts." Detected fragment: AB****34.`
   );
@@ -37,6 +39,7 @@ function Sandbox({ agent }) {
     try {
       const r = await api.post("/harness/sandbox", {
         agent_id: agent.id,
+        project_id: projectId || null,
         masked_input: input,
         level,
         tier: tier || null,

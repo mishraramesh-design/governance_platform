@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import api from "../lib/api";
 import { useProject } from "../context/ProjectContext";
@@ -12,7 +13,8 @@ const GATE_STYLE = { "Ready": "text-green-700", "At Risk": "text-red-700", "Not 
 export default function RepoAudit() {
   const { setProjectId, refreshProjects } = useProject();
   const navigate = useNavigate();
-  const [url, setUrl] = useState("https://github.com/mishraramesh-design/myauction-node");
+  const [searchParams] = useSearchParams();
+  const [url, setUrl] = useState(searchParams.get("url") || "https://github.com/mishraramesh-design/myauction-node");
   const [token, setToken] = useState("");
   const [result, setResult] = useState(null);
   const BACKEND = process.env.REACT_APP_BACKEND_URL;
