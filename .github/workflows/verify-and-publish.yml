@@ -48,6 +48,7 @@ jobs:
           python -m unittest discover -s backend/tests -p 'test_workspace_routes.py' -v
           python -m unittest discover -s backend/tests -p 'test_browser_worker.py' -v
           python -m unittest discover -s backend/tests -p 'test_foundation_*.py' -v
+          python -m unittest discover -s backend/tests -p 'test_failure_diagnostics.py' -v
       - uses: actions/setup-node@v4
         with:
           node-version: "20"

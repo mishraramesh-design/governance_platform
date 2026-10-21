@@ -569,6 +569,8 @@ async def run_studio_repository_audit(run_id: str, user=Depends(auth.get_current
         raise HTTPException(409, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    except ledger_mod.LedgerWriteError:
+        raise
     except RuntimeError as exc:
         raise HTTPException(502, str(exc))
 

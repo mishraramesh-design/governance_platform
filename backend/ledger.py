@@ -7,6 +7,7 @@ without its record. Legacy failures remain visible even after acknowledgment.
 import json
 import asyncio
 import hashlib
+import logging
 from uuid import uuid4
 from datetime import datetime, timezone
 from pymongo.errors import DuplicateKeyError
@@ -15,6 +16,14 @@ GENESIS_HASH = '0' * 64
 CHAIN = 'v2'
 MAX_ENTRIES = 200000
 _append_lock = asyncio.Lock()
+logger = logging.getLogger(__name__)
+
+
+class LedgerWriteError(RuntimeError):
+    """Controlled failure: no caller may treat an unrecorded event as accepted."""
+    def __init__(self, reason):
+        self.reference = uuid4().hex
+        super().__init__(f'{reason} Reference: {self.reference}. No approval was recorded.')
 
 
 def _core_string(seq, prev_hash, payload_type, payload_ref, payload_summary, timestamp, chain_id=None):
@@ -48,22 +57,44 @@ async def _index(db):
 
 
 async def _insert(db, payload_type, payload_ref, summary, only_if_empty=False):
-    for _ in range(50):
+    for attempt in range(100):
         last = await db.ledger.find_one({'chain_id': CHAIN}, {'_id': 0}, sort=[('seq', -1)])
         if only_if_empty and last:
             return last
         seq, prev = (last['seq'] + 1, last['hash']) if last else (1, GENESIS_HASH)
         timestamp = datetime.now(timezone.utc).isoformat()
         core = _core_string(seq, prev, payload_type, payload_ref, summary, timestamp, CHAIN)
-        entry = {'id': str(uuid4()), 'chain_id': CHAIN, 'seq': seq, 'prev_hash': prev,
+        # Earlier deployments retain a unique (chain, seq) index. Missing chain
+        # is indexed as null and can collide with legacy global entries even
+        # though (chain_id, seq) is unique. New writes supply both namespaces;
+        # original records, hashes and indexes are deliberately left untouched.
+        entry = {'id': str(uuid4()), 'chain_id': CHAIN, 'chain': CHAIN, 'seq': seq, 'prev_hash': prev,
                  'hash': hashlib.sha256(core.encode()).hexdigest(), 'payload_type': payload_type,
                  'payload_ref': payload_ref, 'payload_summary': summary, 'timestamp': timestamp}
         try:
             await db.ledger.insert_one(dict(entry))
             return entry
-        except DuplicateKeyError:
-            await asyncio.sleep(0)
-    raise RuntimeError('Ledger append contention; event was not silently accepted.')
+        except DuplicateKeyError as exc:
+            # A conflict on another unique index is not sequence contention.
+            # Never log key values, raw Mongo errors, or payload summaries.
+            fields = set((exc.details or {}).get('keyPattern', {}))
+            if fields and fields not in ({'chain_id', 'seq'}, {'chain', 'seq'}):
+                error = LedgerWriteError('Ledger storage constraint rejected the write.')
+                known_fields = sorted(fields & {'chain', 'chain_id', 'seq', 'id', '_id', 'hash', 'prev_hash', 'payload_ref', 'payload_type'})
+                logger.error('ledger_write_rejected reference=%s indexed_fields=%s', error.reference, known_fields)
+                raise error from None
+            # Real competing writers must have advanced the winning tail. If no
+            # new tail exists, this is a persistent storage/index problem.
+            winner = await db.ledger.find_one({'chain_id': CHAIN}, {'_id': 0}, sort=[('seq', -1)])
+            if winner and winner['seq'] >= seq:
+                await asyncio.sleep(min(0.002 * (attempt + 1), 0.05))
+                continue
+            error = LedgerWriteError('Ledger storage conflict requires administrator review.')
+            logger.error('ledger_write_stalled reference=%s attempted_sequence=%s', error.reference, seq)
+            raise error from None
+    error = LedgerWriteError('Ledger remained busy after bounded retries; retry the operation.')
+    logger.error('ledger_write_contention reference=%s', error.reference)
+    raise error
 
 
 async def initialize(db):

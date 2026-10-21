@@ -248,6 +248,8 @@ async def ingest_repo_audit(payload: RepoAuditRequest, user=Depends(auth.get_cur
         raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(400, str(e))
+    except ledger_mod.LedgerWriteError:
+        raise
     except RuntimeError as e:
         raise HTTPException(502, str(e))
 

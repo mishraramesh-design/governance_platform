@@ -1,6 +1,7 @@
 """JSON allow-list logging with deterministic sensitive-text redaction."""
 import json
 import logging
+from pathlib import PurePath
 from datetime import datetime, timezone
 
 from detectors import mask_sensitive_text
@@ -9,6 +10,17 @@ from detectors import mask_sensitive_text
 class SafeRedactionFilter(logging.Filter):
     """Render then redact before formatting; discard unreviewed exception payloads."""
     def filter(self, record):
+        record.safe_exception = None
+        # Keep diagnostic code locations, never exception messages, source lines,
+        # local variables or absolute paths (all can contain submitted secrets).
+        if record.exc_info and record.exc_info[0]:
+            trace = record.exc_info[2]
+            frames = []
+            while trace is not None:
+                frames.append({'file': PurePath(trace.tb_frame.f_code.co_filename).name[:120],
+                               'function': trace.tb_frame.f_code.co_name[:120], 'line': trace.tb_lineno})
+                trace = trace.tb_next
+            record.safe_exception = {'type': record.exc_info[0].__name__[:120], 'frames': frames[-12:]}
         try:
             message = record.getMessage()
         except Exception:
@@ -24,12 +36,15 @@ class SafeRedactionFilter(logging.Filter):
 class AllowListJsonFormatter(logging.Formatter):
     """Emit only timestamp, severity, logger name and already-redacted message."""
     def format(self, record):
-        return json.dumps({
+        payload = {
             "timestamp": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
             "level": record.levelname[:16],
             "logger": record.name[:160],
             "message": record.msg if isinstance(record.msg, str) else "[non-text log message]",
-        }, ensure_ascii=False, separators=(",", ":"))
+        }
+        if getattr(record, 'safe_exception', None):
+            payload['exception'] = record.safe_exception
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def configure_safe_logging():

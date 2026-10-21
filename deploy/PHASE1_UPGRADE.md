@@ -17,6 +17,14 @@ The frontend now displays a token sign-in screen before requesting project data.
 
 ## Compatibility and migration
 
+### Existing ledger index compatibility fix
+
+The original database can retain a unique `ledger_chain_seq` index on `(chain, seq)`. Phase 1 initially populated only `chain_id`; MongoDB indexes a missing `chain` as null, which can collide with older global records. This was reproduced with the deployed index definition and copied ledger records.
+
+New v2 entries now populate both `chain_id: v2` and `chain: v2`. Both unique indexes remain in place. No old entries, hashes, sequence values, or legacy snapshot anchors are rewritten. No manual index deletion, database reset, or YAML change is required. Publish and redeploy the corrected backend, then retry the failed repository audit and approve a fresh or still-open browser plan. The earlier failed audit can have an incomplete current projection; its preserved historical snapshot remains available.
+
+Persistent storage conflicts now produce a controlled HTTP 503 with a diagnostic reference. Approval remains uncommitted if the ledger cannot accept the event. Logs retain exception type, file basename, function and line numbers without exception messages, source lines or local values.
+
 - Existing project IDs, report IDs, API route shapes, Mongo volume and scanner/browser services are retained.
 - APIs now require authentication and project membership. Integrations that previously read protected records anonymously must send `Authorization: Bearer <issued-token>`.
 - Platform administration requires a platform role; a project governance role alone no longer grants platform administration.

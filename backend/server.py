@@ -4,6 +4,7 @@ from safe_logging import configure_safe_logging
 configure_safe_logging()
 
 from fastapi import FastAPI, APIRouter, Depends
+from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 import os
 
@@ -17,6 +18,15 @@ from routers import studio as studio_routes
 from routers import testing_workspace as testing_workspace_routes
 
 app = FastAPI(title="SDLC Governance & Assurance Platform")
+
+
+@app.exception_handler(ledger.LedgerWriteError)
+async def ledger_write_unavailable(request, exc):
+    return JSONResponse(status_code=503, content={
+        'detail': 'Audit storage could not record this operation. Retry after administrator review.',
+        'error_code': 'ledger_write_unavailable', 'reference': exc.reference}, headers={'Retry-After': '5'})
+
+
 api_router = APIRouter(prefix="/api", dependencies=[Depends(protect_api)])
 
 

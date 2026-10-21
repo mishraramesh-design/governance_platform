@@ -260,14 +260,30 @@ async def approve_plan(sid: str, request: ApprovedPlan, user=Depends(auth.get_cu
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     digest = plan_hash(plan)
-    if record.get('approved_plan_hash'):
-        await db.testing_plan_history.insert_one({'id': uuid4().hex, 'session_id': sid, 'owner_id': user['id'],
-            'archived_at': now(), 'plan': record.get('plan'), 'plan_approval': record.get('plan_approval'),
-            'plan_sha256': record['approved_plan_hash'], 'results': record.get('results', []),
-            'actions': record.get('action_history', []), 'sources': record.get('sources', [])})
-    approval = await audit(record, 'plan_approved', {'plan_sha256': digest, 'user_id': user['id'], 'case_count': len(plan['cases'])})
-    await db.testing_sessions.update_one({'id': sid}, {'$set': {'plan': plan, 'plan_hash': digest,
-        'approved_plan_hash': digest, 'plan_approval': approval, 'status': 'paused', 'results': [], 'action_history': []}})
+    claim = uuid4().hex
+    acquired = await db.testing_sessions.update_one(
+        {'id': sid, 'owner_id': user['id'], 'status': record['status'],
+         'approved_plan_hash': record.get('approved_plan_hash')},
+        {'$set': {'status': 'approving', 'approval_claim': claim}})
+    if not acquired.matched_count:
+        raise HTTPException(409, 'The session changed. Refresh and review before approving.')
+    try:
+        if record.get('approved_plan_hash'):
+            await db.testing_plan_history.insert_one({'id': uuid4().hex, 'session_id': sid, 'owner_id': user['id'],
+                'archived_at': now(), 'plan': record.get('plan'), 'plan_approval': record.get('plan_approval'),
+                'plan_sha256': record['approved_plan_hash'], 'results': record.get('results', []),
+                'actions': record.get('action_history', []), 'sources': record.get('sources', [])})
+        approval = await audit(record, 'plan_approved', {'plan_sha256': digest, 'user_id': user['id'], 'case_count': len(plan['cases'])})
+        saved = await db.testing_sessions.update_one({'id': sid, 'status': 'approving', 'approval_claim': claim},
+            {'$set': {'plan': plan, 'plan_hash': digest, 'approved_plan_hash': digest,
+                      'plan_approval': approval, 'status': 'paused', 'approval_claim': None,
+                      'results': [], 'action_history': []}})
+        if not saved.matched_count:
+            raise HTTPException(409, 'The session changed before approval was committed. Refresh before retrying.')
+    except Exception:
+        await db.testing_sessions.update_one({'id': sid, 'status': 'approving', 'approval_claim': claim},
+            {'$set': {'status': record['status'], 'approval_claim': None}})
+        raise
     await event(sid, 'approval', 'Test plan approved. Click Run approved tests when ready.')
     return {'approved_plan_hash': digest}
 
