@@ -1,4 +1,5 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
+import auth
 
 from database import db
 
@@ -6,8 +7,8 @@ router = APIRouter()
 
 
 @router.get("/projects")
-async def list_projects():
-    return await db.projects.find({}, {"_id": 0}).to_list(1000)
+async def list_projects(user=Depends(auth.get_current_user)):
+    return await db.projects.find({'id': {'$in': await auth.visible_project_ids(user)}}, {"_id": 0}).to_list(1000)
 
 
 @router.get("/projects/{project_id}")

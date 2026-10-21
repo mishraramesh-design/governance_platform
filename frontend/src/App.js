@@ -4,6 +4,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider } from "@/context/AuthContext";
 import { ProjectProvider } from "@/context/ProjectContext";
 import { AppShell } from "@/components/AppShell";
+import { AuthBoundary } from "@/components/AuthBoundary";
 
 import Dashboard from "@/pages/Dashboard";
 import Projects from "@/pages/Projects";
@@ -34,6 +35,7 @@ import TestingWorkspace from "@/pages/TestingWorkspace";
 function App() {
   return (
     <AuthProvider>
+      <AuthBoundary>
       <ProjectProvider>
         <BrowserRouter>
           <AppShell>
@@ -68,6 +70,7 @@ function App() {
         </BrowserRouter>
         <Toaster />
       </ProjectProvider>
+      </AuthBoundary>
     </AuthProvider>
   );
 }

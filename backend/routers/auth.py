@@ -20,8 +20,17 @@ class DemoLoginRequest(BaseModel):
     user_id: str
 
 
+@router.get('/auth/status')
+async def status():
+    return {'demo_mode': auth.demo_enabled()}
+
+
 @router.get("/auth/users")
-async def list_users(project_id: Optional[str] = Query(None)):
+async def list_users(project_id: Optional[str] = Query(None), user=Depends(auth.get_optional_user)):
+    if not auth.demo_enabled():
+        if not user:
+            raise HTTPException(401, 'Valid bearer token required')
+        await auth.require_platform_admin(user)
     users = await db.users.find({}, {"_id": 0}).sort("name", 1).to_list(200)
     for u in users:
         u["roles"] = await auth.roles_for(u["id"], project_id) if project_id else []
@@ -30,6 +39,8 @@ async def list_users(project_id: Optional[str] = Query(None)):
 
 @router.post("/auth/demo-login")
 async def demo_login(payload: DemoLoginRequest):
+    if not auth.demo_enabled():
+        raise HTTPException(404, 'Demo login is disabled. Sign in with your issued access token.')
     user = await db.users.find_one({"id": payload.user_id, "active": True}, {"_id": 0})
     if not user:
         raise HTTPException(404, "demo user not found or inactive")
@@ -47,5 +58,5 @@ async def me(project_id: Optional[str] = Query(None), user=Depends(auth.get_curr
         "user": auth.public_user(user),
         "roles": await auth.roles_for(user["id"], project_id) if project_id else [],
         "all_roles": sorted(await auth.all_roles(user["id"])),
-        "is_admin": auth.ADMIN_ROLE in await auth.all_roles(user["id"]),
+        "is_admin": await auth.is_platform_admin(user),
     }

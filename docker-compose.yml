@@ -28,6 +28,8 @@ services:
     environment:
       MONGO_URL: mongodb://${MONGO_APP_USERNAME}:${MONGO_APP_PASSWORD}@mongo:27017/${DB_NAME:-governance}?authSource=${DB_NAME:-governance}
       DB_NAME: ${DB_NAME:-governance}
+      DEMO_MODE: ${DEMO_MODE:-false}
+      BOOTSTRAP_ADMIN_TOKEN: ${BOOTSTRAP_ADMIN_TOKEN:?Set BOOTSTRAP_ADMIN_TOKEN for administrator sign-in}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
       EDGE_SIGNING_SECRET: ${EDGE_SIGNING_SECRET:?Set EDGE_SIGNING_SECRET in .env}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

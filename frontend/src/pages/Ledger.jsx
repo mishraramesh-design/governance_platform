@@ -26,6 +26,7 @@ export default function Ledger() {
         <div data-testid="ledger-verify-result" className={`mb-6 border p-4 ${verify.valid ? "border-green-600 bg-green-50" : "border-red-600 bg-red-50"}`}>
           <div className={`font-black text-lg ${verify.valid ? "text-green-700" : "text-red-700"}`}>{verify.valid ? "✓ Chain Valid" : "✗ Chain Broken"}</div>
           <div className="text-xs text-gray-600">{verify.total_entries} entries verified{!verify.valid && ` - break at seq ${verify.broken_at_seq}`}</div>
+          {verify.active_chain && <div className="text-xs mt-2">Active {verify.active_chain_id}: {verify.active_chain.valid ? 'valid' : 'needs investigation'} · Historical evidence: {verify.legacy?.valid ? 'valid' : 'failed integrity check; originals preserved'} · Legacy snapshot: {verify.legacy_snapshot_matches ? 'matches' : 'CHANGED'}. Baseline review does not erase historical failures.</div>}
         </div>
       )}
 
@@ -47,7 +48,7 @@ export default function Ledger() {
               <tr key={e.id} data-testid={`ledger-row-${e.seq}`}
                   onClick={isMlops ? () => navigate("/mlops") : undefined}
                   className={`transition-colors duration-100 ${isMlops ? "cursor-pointer hover:bg-[#FFFBe6]" : "hover:bg-gray-50"}`}>
-                <td className="border-b border-gray-200 py-1.5 px-3">{e.seq}</td>
+                <td className="border-b border-gray-200 py-1.5 px-3">{e.chain_id || 'legacy'}:{e.seq}</td>
                 <td className="border-b border-gray-200 py-1.5 px-3">
                   {isMlops ? (
                     <span data-testid={`ledger-mlops-link-${e.seq}`} className="text-black underline decoration-[#FFE600] decoration-2 font-bold">

@@ -12,9 +12,7 @@ export function ProjectProvider({ children }) {
   useEffect(() => {
     api.get("/projects").then((res) => {
       setProjects(res.data);
-      if (!projectId && res.data.length) {
-        setProjectId(res.data[0].id);
-      }
+      if (!res.data.some(project => project.id === projectId)) setProjectId(res.data[0]?.id || '');
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

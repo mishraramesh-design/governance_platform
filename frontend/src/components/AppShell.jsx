@@ -65,14 +65,14 @@ function Logo() {
 }
 
 export function AppShell({ children }) {
-  const { user, allRoles, isAdmin, role, setRole, signInAs, signOut, isAuthenticated } = useAuth();
+  const { user, allRoles, isAdmin, role, setRole, signInAs, signOut, isAuthenticated, demoMode } = useAuth();
   const { projects, projectId, setProjectId, currentProject } = useProject();
   const location = useLocation();
   const [users, setUsers] = useState([]);
 
   useEffect(() => {
-    api.get("/auth/users").then((r) => setUsers(r.data)).catch(() => setUsers([]));
-  }, []);
+    if (demoMode) api.get("/auth/users").then((r) => setUsers(r.data)).catch(() => setUsers([]));
+  }, [demoMode]);
 
   const onSignInChange = (e) => {
     const uid = e.target.value;
@@ -158,7 +158,7 @@ export function AppShell({ children }) {
             </select>
             <div className="flex items-center gap-2 border-l border-gray-200 pl-3">
               <span className="text-[10px] uppercase tracking-wider text-gray-400 hidden sm:inline">Signed in</span>
-              <select
+              {demoMode ? <select
                 data-testid="user-switcher"
                 value={user?.id || ""}
                 onChange={onSignInChange}
@@ -170,7 +170,7 @@ export function AppShell({ children }) {
                     {u.name}
                   </option>
                 ))}
-              </select>
+              </select> : <><span className="text-xs font-semibold">{user?.name}</span><button type="button" className="text-xs underline" onClick={signOut}>Sign out</button></>}
             </div>
             {isAuthenticated && (
               <div className="flex items-center gap-2 border-l border-gray-200 pl-3">

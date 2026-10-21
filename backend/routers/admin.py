@@ -20,7 +20,7 @@ ALL_ROLES = [
 
 
 async def require_admin(user=Depends(auth.get_current_user)):
-    await auth.require_any_global_role(user, {auth.ADMIN_ROLE})
+    await auth.require_platform_admin(user)
     return user
 
 

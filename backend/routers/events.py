@@ -8,6 +8,7 @@ from models import EventSimulateRequest, TriageDecisionRequest, AdjudicationDeci
 import engine
 import ledger as ledger_mod
 import auth
+from audit_history import historical_record
 
 router = APIRouter()
 
@@ -48,7 +49,7 @@ async def list_findings(project_id: str = Query(...), control_id: Optional[str] 
 
 @router.get("/findings/{finding_id}")
 async def get_finding(finding_id: str):
-    f = await db.findings.find_one({"id": finding_id}, {"_id": 0})
+    f = await historical_record(db, 'findings', finding_id)
     if not f:
         raise HTTPException(404, "finding not found")
     return f
