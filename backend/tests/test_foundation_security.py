@@ -7,7 +7,8 @@ import unittest
 from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 import auth, server, access_policy, seed_data
-from routers import projects, reports, events, assurance, auth as auth_routes, studio
+from routers import projects, reports, events, assurance, auth as auth_routes, studio, testing_workspace as ws
+import ledger
 from phase1_fakes import Database
 
 
@@ -86,3 +87,17 @@ class FoundationAccessTests(unittest.TestCase):
     def test_html_export_escapes_untrusted_content(self):
         html=reports.render_html('<script>x</script>','<img src=x>',[{'heading':'<b>','body':['<svg onload=alert(1)>']}])
         self.assertNotIn('<script>',html);self.assertNotIn('<svg',html);self.assertIn('&lt;svg',html)
+
+    def test_ledger_failure_returns_controlled_service_error_not_500(self):
+        record = {'id': 'fixture', 'owner_id': 'admin', 'status': 'plan_review',
+                  'approved_plan_hash': None, 'sources': [{'id': 'R1'}]}
+        asyncio.run(self.db.testing_sessions.insert_one(record))
+        payload = {'plan': {'cases': [{'id': 'T1', 'title': 'Check heading', 'source_ids': ['R1'],
+                                     'steps': ['Read heading'], 'expected': 'Heading shown'}]}}
+        with (patch.object(ws, 'db', self.db), patch.object(ws, 'owned', AsyncMock(return_value=record)),
+              patch.object(ws, 'audit', AsyncMock(side_effect=ledger.LedgerWriteError('Storage fixture')))):
+            response = self.client.post('/api/testing-workspace/sessions/fixture/approve-plan',
+                                        headers=self.headers('admin'), json=payload)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()['error_code'], 'ledger_write_unavailable')
+        self.assertTrue(response.json()['reference'])

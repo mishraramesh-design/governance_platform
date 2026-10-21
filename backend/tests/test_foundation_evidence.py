@@ -124,3 +124,77 @@ class MongoEpochIntegration(unittest.IsolatedAsyncioTestCase):
         result=await ledger.verify_integrity(self.db)
         self.assertTrue(result['active_chain']['valid']);self.assertFalse(result['legacy']['valid'])
         self.assertTrue(result['legacy_snapshot_matches'])
+
+    async def test_old_chain_index_and_existing_v2_without_alias_are_compatible(self):
+        # Hostinger retained this index from the original per-project ledger.
+        # An old global row at seq=60 collided with the new epoch after seq=59.
+        old = legacy_entry('old-global')
+        old['seq'] = 60
+        await self.db.ledger.insert_one(old)
+        await self.db.ledger.create_index([('chain', 1), ('seq', 1)], unique=True, name='ledger_chain_seq')
+        await ledger.initialize(self.db)
+        for i in range(58):
+            await ledger.append_to_ledger(self.db, 'fixture', str(i), {})
+        # Simulate v2 rows written by the already deployed release.
+        await self.db.ledger.update_many({'chain_id': 'v2'}, {'$unset': {'chain': ''}})
+        before = await self.db.ledger.find({}, {'_id': 0}).sort('seq', 1).to_list(100)
+        for i in range(200):
+            await ledger.append_to_ledger(self.db, 'regression', str(i), {})
+        status = await ledger.verify_integrity(self.db)
+        self.assertTrue(status['active_chain']['valid'])
+        self.assertTrue(status['legacy_snapshot_matches'])
+        for row in before:
+            self.assertEqual(await self.db.ledger.find_one({'id': row['id']}, {'_id': 0}), row)
+        self.assertIn('ledger_chain_seq', await self.db.ledger.index_information())
+        await asyncio.gather(*(ledger._insert(self.db, 'concurrent', str(i), {}) for i in range(30)))
+        self.assertTrue((await ledger.verify_integrity(self.db))['active_chain']['valid'])
+
+    async def test_browser_plan_approval_with_old_index_records_real_ledger_entry(self):
+        from routers import testing_workspace as ws
+        await self.db.ledger.create_index([('chain', 1), ('seq', 1)], unique=True, name='ledger_chain_seq')
+        old = legacy_entry('old-global')
+        old['seq'] = 60
+        await self.db.ledger.insert_one(old)
+        await ledger.initialize(self.db)
+        for i in range(58):
+            await ledger.append_to_ledger(self.db, 'fixture', str(i), {})
+        await self.db.ledger.update_many({'chain_id': 'v2'}, {'$unset': {'chain': ''}})
+        record = {'id': 'approval-fixture', 'owner_id': 'fixture-owner', 'status': 'plan_review',
+                  'approved_plan_hash': None, 'sources': [{'id': 'R1'}]}
+        await self.db.testing_sessions.insert_one(dict(record))
+        request = ws.ApprovedPlan.model_validate({'plan': {'cases': [{
+            'id': 'T1', 'title': 'Check heading', 'source_ids': ['R1'], 'steps': ['Read heading'],
+            'expected': 'Heading is visible', 'oracle': {'op': 'assert_text', 'value': 'Heading'}}]}})
+        with patch.object(ws, 'db', self.db), patch.object(ws, 'owned', AsyncMock(return_value=record)):
+            result = await ws.approve_plan(record['id'], request, {'id': 'fixture-owner'})
+        saved = await self.db.testing_sessions.find_one({'id': record['id']})
+        self.assertEqual(saved['status'], 'paused')
+        self.assertEqual(saved['approved_plan_hash'], result['approved_plan_hash'])
+        self.assertTrue((await ledger.verify_integrity(self.db))['active_chain']['valid'])
+
+    async def test_reaudit_crosses_legacy_sequence_collision_and_preserves_reports(self):
+        await self.db.ledger.create_index([('chain', 1), ('seq', 1)], unique=True, name='ledger_chain_seq')
+        old = legacy_entry('old-global')
+        old['seq'] = 60
+        await self.db.ledger.insert_one(old)
+        project = {'id': 'repo-fixture', 'name': 'fixture', 'source': 'github_live',
+                   'repo_url': 'https://github.com/owner/fixture', 'integrity_tier': 'T2'}
+        await self.db.projects.insert_one(dict(project))
+        await self.db.reports.insert_one({'id': 'original-report', 'project_id': project['id'], 'title': 'Original'})
+        scan = {'profile': {'languages': {'Python': 75}, 'frameworks': [], 'code_files_scanned': 75,
+                           'approx_loc': 75, 'spec': {}}, 'tool_assessments': [],
+                'scanned': [{'path': f'fixture{i}.py', 'secrets': [], 'pii': [], 'logging': [],
+                             'static': [{'type': 'synthetic-quality-rule', 'line': 1}]} for i in range(75)]}
+        async def report(*args):
+            value = {'id': uuid4().hex, 'project_id': project['id'], 'title': 'Generated fixture'}
+            await self.db.reports.insert_one(dict(value))
+            return value
+        with (patch.object(repo_ingest, '_clone_and_scan', return_value=scan),
+              patch.object(repo_ingest, 'get_project_key', AsyncMock(return_value=b'fixture')),
+              patch.object(repo_ingest.engine, 'generate_author_report', report),
+              patch.object(repo_ingest.engine, 'generate_team_lead_report', report),
+              patch.object(repo_ingest.engine, 'compute_gate_status', AsyncMock(return_value=[]))):
+            result = await repo_ingest._ingest_repo(self.db, project['repo_url'])
+        self.assertGreaterEqual(result['finding_summary']['total'], 75)
+        self.assertEqual((await audit_history.historical_record(self.db, 'reports', 'original-report'))['title'], 'Original')
+        self.assertTrue((await ledger.verify_integrity(self.db))['active_chain']['valid'])
