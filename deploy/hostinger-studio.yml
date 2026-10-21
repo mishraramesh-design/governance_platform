@@ -26,6 +26,8 @@ services:
     environment:
       MONGO_URL: "mongodb://mongo:27017/governance"
       DB_NAME: "governance"
+      DEMO_MODE: "false"
+      BOOTSTRAP_ADMIN_TOKEN: "REPLACE_WITH_YOUR_ADMIN_ACCESS_TOKEN"
       CORS_ORIGINS: "http://93.127.194.188:5021"
       EDGE_SIGNING_SECRET: "REPLACE_WITH_A_LONG_RANDOM_SECRET"
       ZAP_API_URL: "http://zap:8080"

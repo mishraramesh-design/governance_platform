@@ -1,5 +1,7 @@
 """Static catalogs (agents, controls, AI-governance controls, edge clients) and seed/demo data generator."""
 import hashlib
+import os
+import auth
 from uuid import uuid4
 from datetime import datetime, timezone
 
@@ -67,6 +69,36 @@ async def ensure_users_seeded(db):
     """Idempotently seed users, per-project role assignments, deterministic tokens,
     and backfill commit author_user_id for segregation-of-duties resolution."""
     now = datetime.now(timezone.utc).isoformat()
+
+    if not auth.demo_enabled():
+        # Keep old users/evidence; only remove the authority of public demo tokens.
+        await db.api_tokens.update_many({'created_by': {'$in': ['seed', 'demo-login']}},
+            {'$set': {'revoked': True, 'revoked_at': now, 'revoked_by': 'demo-mode-disabled'}})
+        bootstrap = os.environ.get('BOOTSTRAP_ADMIN_TOKEN', '').strip()
+        if bootstrap.lower().startswith(('replace', 'change-this', 'set_your')):
+            raise RuntimeError('Replace the BOOTSTRAP_ADMIN_TOKEN template value before deployment.')
+        if not bootstrap:
+            if not await db.api_tokens.find_one({'revoked': False, 'created_by': {'$nin': ['seed', 'demo-login', 'bootstrap']}}):
+                raise RuntimeError('Set BOOTSTRAP_ADMIN_TOKEN to provision the first administrator.')
+            return
+        await db.users.update_one({'id': 'u-ramesh'}, {'$setOnInsert': {
+            'id': 'u-ramesh', 'name': 'Ramesh Mishra', 'email': 'mishraramesh@gmail.com',
+            'active': True, 'created_at': now}}, upsert=True)
+        await db.users.update_one({'id': 'u-ramesh'}, {'$addToSet': {'platform_roles': 'Programme Manager'}})
+        # A changed bootstrap value retires the previous bootstrap token.
+        digest = _hash_token(bootstrap)
+        await db.api_tokens.update_many({'created_by': 'bootstrap', 'token_hash': {'$ne': digest}},
+            {'$set': {'revoked': True, 'revoked_at': now}})
+        await db.api_tokens.update_one({'id': 'bootstrap-admin'}, {'$set': {
+            'id': 'bootstrap-admin', 'token_hash': digest, 'user_id': 'u-ramesh',
+            'created_by': 'bootstrap', 'revoked': False}, '$setOnInsert': {'created_at': now}}, upsert=True)
+        # Bootstrap is a platform administrator. New repository memberships are
+        # granted only to the authenticated initiating owner, never all demo users.
+        async for project in db.projects.find({}, {'id': 1}):
+            await db.role_assignments.update_one({'user_id': 'u-ramesh', 'project_id': project['id']},
+                {'$setOnInsert': {'id': str(uuid4()), 'user_id': 'u-ramesh', 'project_id': project['id'],
+                    'created_at': now}, '$addToSet': {'roles': 'Programme Manager'}}, upsert=True)
+        return
 
     if await db.users.count_documents({}) == 0:
         await db.users.insert_many([
@@ -307,6 +339,12 @@ def fetch_report():
 
 
 async def ensure_seeded(db):
+    if not auth.demo_enabled():
+        for collection, values in (('agents', AGENTS), ('controls', CONTROLS),
+                                   ('ai_governance', AI_GOV_CONTROLS), ('edge_clients', EDGE_CLIENTS)):
+            for item in values:
+                await db[collection].update_one({'id': item['id']}, {'$setOnInsert': dict(item)}, upsert=True)
+        return
     if await db.projects.count_documents({}) > 0:
         return
 

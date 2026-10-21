@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Response, Depends
 
 from database import db
 from models import RepoAuditRequest, RuntimeAnalyzeRequest, EdgeClientSimulateRequest, EdgeClientBundleRequest
+from pydantic import BaseModel, Field
 from detectors import scan_secrets, scan_pii, mask_sensitive_text, get_project_key
 import engine
 import repo_ingest
@@ -22,7 +23,7 @@ router = APIRouter()
 
 @router.get("/ledger")
 async def get_ledger():
-    return await db.ledger.find({}, {"_id": 0}).sort("seq", 1).to_list(200000)
+    return await db.ledger.find({}, {"_id": 0}).sort([('timestamp', 1), ('id', 1)]).to_list(200000)
 
 
 @router.get("/ledger/verify")
@@ -33,7 +34,23 @@ async def verify_ledger():
 @router.post("/ledger/rebuild")
 async def rebuild_ledger(user=Depends(auth.get_current_user)):
     await auth.require_any_global_role(user, {auth.ADMIN_ROLE})
-    return await ledger_mod.rebuild_chain(db)
+    raise HTTPException(410, 'In-place rebuilding is disabled. Use /ledger/baseline to acknowledge preserved historical evidence.')
+
+
+class BaselineReview(BaseModel):
+    reason: str = Field(min_length=20, max_length=2000)
+    acknowledge_historical_failure: bool = False
+
+
+@router.post('/ledger/baseline')
+async def review_baseline(payload: BaselineReview, user=Depends(auth.get_current_user)):
+    await auth.require_any_global_role(user, {auth.ADMIN_ROLE})
+    if not payload.acknowledge_historical_failure:
+        raise HTTPException(400, 'Explicitly acknowledge that historical failures remain visible.')
+    try:
+        return await ledger_mod.acknowledge_legacy(db, user['id'], mask_sensitive_text(payload.reason)[0])
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
 
 
 @router.get("/edge-clients")
@@ -222,11 +239,13 @@ async def verify_edge_bundle(bundle_id: str):
 async def ingest_repo_audit(payload: RepoAuditRequest, user=Depends(auth.get_current_user)):
     await auth.require_any_global_role(user, auth.GOVERNANCE_ROLES)
     try:
-        result = await repo_ingest.ingest_repo(db, payload.github_url, payload.name, payload.git_token)
+        result = await repo_ingest.ingest_repo(db, payload.github_url, payload.name, payload.git_token, actor=user)
         pid = (result.get("project") or {}).get("id")
         if pid:
-            await auth.ensure_project_assignments(pid)
+            await auth.ensure_project_assignments(pid, user)
         return result
+    except repo_ingest.AuditAlreadyRunning as e:
+        raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(400, str(e))
     except RuntimeError as e:
@@ -259,6 +278,27 @@ async def evidence_pack_endpoint(project_id: str, format: str = "pdf"):
     fname = f"evidence_pack_{project['name']}.{ext}".replace(" ", "_")
     return Response(content=content, media_type=mime,
                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@router.get('/repo-audit/{project_id}/history')
+async def audit_versions(project_id: str):
+    return await db.repo_audit_versions.find({'project_id': project_id},
+        {'_id': 0, 'records': 0}).sort('archived_at', -1).to_list(200)
+
+
+@router.get('/repo-audit/{project_id}/history/{version_id}')
+async def audit_version(project_id: str, version_id: str):
+    version = await db.repo_audit_versions.find_one({'id': version_id, 'project_id': project_id}, {'_id': 0})
+    if not version:
+        raise HTTPException(404, 'Audit version not found.')
+    from audit_history import historical_record, record_hash
+    records = []
+    for item in version['records']:
+        record = await historical_record(db, item['collection'], item['record_id'])
+        if not record or record_hash(record) != item['sha256']:
+            raise HTTPException(409, 'Historical audit content failed its hash check.')
+        records.append({'collection': item['collection'], 'record': record, 'sha256': item['sha256']})
+    return {'version': version, 'records': records}
 
 
 def _audit_profile(audit):
@@ -295,7 +335,7 @@ async def simulate_repo_audit(payload: RepoAuditRequest):
 
 
 @router.post("/runtime/analyze")
-async def analyze_runtime_log(payload: RuntimeAnalyzeRequest):
+async def analyze_runtime_log(payload: RuntimeAnalyzeRequest, user=Depends(auth.get_current_user)):
     project = await db.projects.find_one({"id": payload.project_id}, {"_id": 0})
     if not project:
         raise HTTPException(404, "project not found")
@@ -324,6 +364,6 @@ async def analyze_runtime_log(payload: RuntimeAnalyzeRequest):
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.runtime_reports.insert_one(dict(report))
-    await ledger_mod.append_to_ledger(db, "runtime_report", report["id"], {"project_id": payload.project_id})
+    await ledger_mod.append_to_ledger(db, "runtime_report", report["id"], {"project_id": payload.project_id, 'actor_user_id': user['id']})
     report.pop("_id", None)
     return report

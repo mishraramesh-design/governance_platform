@@ -9,6 +9,7 @@ export function AuthProvider({ children }) {
   const [isAdmin, setIsAdmin] = useState(false);
   const [role, setRole] = useState(() => sessionStorage.getItem("gov_acting_role") || "");
   const [ready, setReady] = useState(false);
+  const [demoMode, setDemoMode] = useState(false);
 
   useEffect(() => {
     if (role) sessionStorage.setItem("gov_acting_role", role);
@@ -24,6 +25,7 @@ export function AuthProvider({ children }) {
   // Restore an existing session (token in sessionStorage) on first load.
   useEffect(() => {
     (async () => {
+      try { setDemoMode((await api.get('/auth/status')).data.demo_mode === true); } catch { setDemoMode(false); }
       if (sessionStorage.getItem("gov_token")) {
         try {
           const me = await api.get("/auth/me").then((r) => r.data);
@@ -51,11 +53,25 @@ export function AuthProvider({ children }) {
     setAllRoles([]);
     setIsAdmin(false);
     setRole("");
+    sessionStorage.removeItem('testing_workspace_session');
   }, []);
+
+  useEffect(() => {
+    window.addEventListener('gov-auth-expired', signOut);
+    return () => window.removeEventListener('gov-auth-expired', signOut);
+  }, [signOut]);
+
+  const signInWithToken = useCallback(async (token) => {
+    setAuthToken(token.trim());
+    try {
+      const me = (await api.get('/auth/me')).data;
+      applyMe(me);
+    } catch (error) { setAuthToken(null); throw error; }
+  }, [applyMe]);
 
   return (
     <AuthContext.Provider
-      value={{ user, allRoles, isAdmin, role, setRole, signInAs, signOut, ready, isAuthenticated: !!user }}
+      value={{ user, allRoles, isAdmin, role, setRole, signInAs, signInWithToken, signOut, ready, demoMode, isAuthenticated: !!user }}
     >
       {children}
     </AuthContext.Provider>

@@ -3,19 +3,21 @@ from safe_logging import configure_safe_logging
 
 configure_safe_logging()
 
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, Depends
 from starlette.middleware.cors import CORSMiddleware
 import os
 
 from database import db
 import seed_data
+import ledger
+from access_policy import protect_api
 from routers import catalog, projects, events, reports, assurance, dashboard, harness, mlops
 from routers import auth as auth_routes, admin as admin_routes, routing as routing_routes
 from routers import studio as studio_routes
 from routers import testing_workspace as testing_workspace_routes
 
 app = FastAPI(title="SDLC Governance & Assurance Platform")
-api_router = APIRouter(prefix="/api")
+api_router = APIRouter(prefix="/api", dependencies=[Depends(protect_api)])
 
 
 @api_router.get("/")
@@ -52,6 +54,7 @@ logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 async def seed_on_startup():
+    await ledger.initialize(db)
     await testing_workspace_routes.recover_sessions()
     try:
         await studio_routes.recover_scanner()
@@ -74,3 +77,4 @@ async def seed_on_startup():
         await mlops.ensure_mlops_seeded(db)
     except Exception as e:
         logger.error(f"Seeding failed: {e}")
+        raise

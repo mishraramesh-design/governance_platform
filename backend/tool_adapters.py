@@ -12,6 +12,7 @@ import tempfile
 import shutil
 import subprocess
 import time
+import re
 from pathlib import Path
 
 
@@ -92,7 +93,7 @@ def _normalized_findings(tool_id, raw_output, root):
             extra, start = item.get("extra", {}), item.get("start", {})
             findings.append({"rule_id": item.get("check_id"), "path": _clean_path(item.get("path"), root),
                              "line": start.get("line"), "severity": extra.get("severity"),
-                             "summary": str(extra.get("message", ""))[:300]})
+                             "summary": "Static security rule matched; review the rule and source location."})
     elif tool_id == "gitleaks" and isinstance(payload, list):
         for item in payload[:100]:
             findings.append({"rule_id": item.get("RuleID"), "path": _clean_path(item.get("File"), root),
@@ -120,14 +121,19 @@ def _normalized_findings(tool_id, raw_output, root):
         for item in payload[:100]:
             findings.append({"rule_id": item.get("code"), "path": _clean_path(item.get("filename"), root),
                              "line": (item.get("location") or {}).get("row"),
-                             "severity": "warning", "summary": str(item.get("message", ""))[:300]})
+                             "severity": "warning", "summary": "Lint rule matched; review the rule and source location."})
     return findings[:100]
 
 
 def _run(tool_id, argv, cwd, timeout=MAX_COMMAND_SECONDS):
     """Run a fixed argv with a bounded timeout and bounded, hashed output."""
     started = time.monotonic()
+    report_directory = None
     try:
+        if tool_id == 'gitleaks':
+            report_directory = tempfile.TemporaryDirectory(prefix='governance-gitleaks-')
+            report_path = Path(report_directory.name) / 'report.json'
+            argv = [*argv, '--report-path', str(report_path)]
         proc = subprocess.run(
             argv, cwd=str(cwd), stdin=subprocess.DEVNULL, capture_output=True,
             text=True, timeout=timeout, check=False,
@@ -137,25 +143,34 @@ def _run(tool_id, argv, cwd, timeout=MAX_COMMAND_SECONDS):
         )
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
+        if report_directory and report_path.is_file():
+            stdout = report_path.read_text(encoding='utf-8')
         # Scanner output can contain source fragments or credentials. Persist only
         # a digest and a bounded finding count, never raw tool output.
         finding_count = None
         findings = _normalized_findings(tool_id, stdout, Path(cwd).resolve())
+        parsed = None
         try:
             parsed = json.loads(stdout)
             if isinstance(parsed, list):
                 finding_count = len(parsed)
             elif isinstance(parsed, dict):
+                if tool_id == 'trivy' and 'Results' in parsed:
+                    finding_count = sum(len(result.get(key) or []) for result in parsed.get('Results', [])
+                        for key in ('Vulnerabilities', 'Misconfigurations', 'Secrets'))
                 for key in ("results", "leaks", "matches", "vulnerabilities"):
                     if isinstance(parsed.get(key), list):
                         finding_count = len(parsed[key])
                         break
         except (TypeError, ValueError):
             pass
-        if finding_count is None and stdout.strip().startswith(("{", "[")):
-            finding_count = len(findings)
+        accepted_exit = proc.returncode in ((0,) if tool_id == 'trivy' else (0, 1))
+        parsed_output = finding_count is not None
+        success = accepted_exit and parsed_output and not (isinstance(parsed, dict) and parsed.get('errors'))
         return {
-            "status": "completed_with_findings" if finding_count else "completed" if proc.returncode == 0 else "tool_error",
+            "status": ('completed_with_findings' if finding_count else 'completed') if success else 'tool_error',
+            'executed': True, 'findings_truncated': bool(finding_count and finding_count > len(findings)),
+            'retained_finding_count': len(findings), 'structured_output_parsed': parsed_output,
             "exit_code": proc.returncode,
             "duration_ms": round((time.monotonic() - started) * 1000),
             "output_sha256": hashlib.sha256((stdout + "\n" + stderr).encode()).hexdigest(),
@@ -163,9 +178,24 @@ def _run(tool_id, argv, cwd, timeout=MAX_COMMAND_SECONDS):
             "findings": findings,
         }
     except subprocess.TimeoutExpired:
-        return {"status": "timed_out", "duration_ms": round((time.monotonic() - started) * 1000)}
+        return {"status": "timed_out", 'executed': True, "duration_ms": round((time.monotonic() - started) * 1000)}
     except OSError as exc:
         return {"status": "runner_error", "error_type": type(exc).__name__}
+    finally:
+        if report_directory:
+            report_directory.cleanup()
+
+
+def _version(binary):
+    try:
+        proc = subprocess.run([binary, '--version'], capture_output=True, text=True,
+                              timeout=5, check=False, stdin=subprocess.DEVNULL,
+                              env={key: value for key, value in os.environ.items()
+                                   if key in {'PATH', 'HOME', 'TEMP', 'TMPDIR', 'SYSTEMROOT', 'WINDIR', 'LANG'}})
+        match = re.search(r'(?<!\d)\d+\.\d+(?:\.\d+)?(?:[-+][a-zA-Z0-9.]+)?', proc.stdout or '')
+        return match.group(0) if proc.returncode == 0 and match else 'not_reported'
+    except (OSError, subprocess.TimeoutExpired):
+        return 'unavailable'
 
 
 def run_repository_static_tools(repository_path):
@@ -184,11 +214,17 @@ def run_repository_static_tools(repository_path):
         if not shutil.which(spec["binary"]):
             results.append({"tool_id": tool_id, "name": spec["name"], "status": "blocked_tool_not_installed"})
             continue
-        results.append({"tool_id": tool_id, "name": spec["name"], **_run(tool_id, argv, root)})
+        result = {"tool_id": tool_id, "name": spec["name"], 'version': _version(spec['binary']), **_run(tool_id, argv, root)}
+        if tool_id == 'semgrep-ce':
+            result['ruleset_sha256'] = hashlib.sha256((Path(__file__).parent / 'tooling_rules' / 'semgrep.yml').read_bytes()).hexdigest()
+        if tool_id == 'trivy':
+            result['database_revision'] = 'not_reported_by_adapter'
+        results.append(result)
 
     py_files = list(root.rglob("*.py"))
     if py_files and shutil.which("ruff"):
         results.append({"tool_id": "native-quality-tools", "name": TOOL_SPECS["native-quality-tools"]["name"],
+                        'version': _version('ruff'),
                         **_run("native-quality-tools", ["ruff", "check", "--output-format", "json", str(root)], root)})
     elif py_files:
         results.append({"tool_id": "native-quality-tools", "name": TOOL_SPECS["native-quality-tools"]["name"],

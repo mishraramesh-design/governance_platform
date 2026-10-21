@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import api from "../lib/api";
+import { AuthenticatedDownload } from "../components/AuthenticatedDownload";
 import { useProject } from "../context/ProjectContext";
 import { PageHeader } from "../components/PageHeader";
 
@@ -11,13 +12,15 @@ const SEV_STYLE = { critical: "bg-red-600 text-white", high: "bg-red-100 text-re
 const GATE_STYLE = { "Ready": "text-green-700", "At Risk": "text-red-700", "Not Assessed": "text-gray-400", "Not Started": "text-gray-400" };
 
 export default function RepoAudit() {
-  const { setProjectId, refreshProjects } = useProject();
+  const { projectId, setProjectId, refreshProjects } = useProject();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [url, setUrl] = useState(searchParams.get("url") || "https://github.com/mishraramesh-design/myauction-node");
   const [token, setToken] = useState("");
   const [result, setResult] = useState(null);
-  const BACKEND = process.env.REACT_APP_BACKEND_URL;
+  const { data: versions } = useQuery({ queryKey: ['repository-history', projectId, result?.audit_version_id],
+    queryFn: () => api.get(`/repo-audit/${projectId}/history`).then(r => r.data), enabled: !!projectId });
+
 
   const audit = useMutation({
     mutationFn: () => api.post("/repo-audit/ingest", { github_url: url, git_token: token || null }),
@@ -52,6 +55,18 @@ export default function RepoAudit() {
 
       {result && (
         <div data-testid="repo-audit-result" className="space-y-6">
+          <section className="border p-4" data-testid="static-tool-evidence">
+            <h2 className="font-bold">Static tool execution evidence</h2>
+            {(result.tool_assessments || []).map(tool => <div key={tool.tool_id} className="border-t mt-2 pt-2 text-xs">
+              <strong>{tool.name}</strong> · {tool.version || 'version not reported'} · {tool.status.replaceAll('_', ' ')}
+              {tool.finding_count != null && ` · ${tool.finding_count} findings`}
+              {tool.exit_code != null && ` · exit ${tool.exit_code}`}
+              {tool.findings_truncated && <span> · retained findings are truncated</span>}
+              {tool.output_sha256 && <p className="break-all font-mono mt-1">Output SHA-256: {tool.output_sha256}</p>}
+              {tool.ruleset_sha256 && <p className="break-all font-mono">Ruleset SHA-256: {tool.ruleset_sha256}</p>}
+            </div>)}
+            {!result.tool_assessments?.length && <p className="text-red-700 text-sm">No external tool run evidence is attached to this historical result.</p>}
+          </section>
           {/* Evidence pack export */}
           <div className="border border-gray-200 p-4 flex flex-wrap items-center justify-between gap-2 bg-gray-50">
             <div>
@@ -59,8 +74,8 @@ export default function RepoAudit() {
               <p className="text-xs text-gray-500">One-click auditor bundle: profile, findings, reports, API traceability and ledger hashes.</p>
             </div>
             <div className="flex gap-2">
-              <a data-testid="download-pdf-btn" href={`${BACKEND}/api/repo-audit/${result.project.id}/evidence-pack?format=pdf`} target="_blank" rel="noreferrer" className="text-xs font-bold bg-black text-white px-3 py-2 hover:bg-[#FFE600] hover:text-black transition-colors">Download PDF</a>
-              <a data-testid="download-docx-btn" href={`${BACKEND}/api/repo-audit/${result.project.id}/evidence-pack?format=docx`} target="_blank" rel="noreferrer" className="text-xs font-bold border border-black px-3 py-2 hover:bg-black hover:text-[#FFE600] transition-colors">Download DOCX</a>
+              <AuthenticatedDownload data-testid="download-pdf-btn" path={`/repo-audit/${result.project.id}/evidence-pack?format=pdf`} filename="evidence-pack.pdf" className="text-xs font-bold bg-black text-white px-3 py-2 hover:bg-[#FFE600] hover:text-black transition-colors">Download PDF</AuthenticatedDownload>
+              <AuthenticatedDownload data-testid="download-docx-btn" path={`/repo-audit/${result.project.id}/evidence-pack?format=docx`} filename="evidence-pack.docx" className="text-xs font-bold border border-black px-3 py-2 hover:bg-black hover:text-[#FFE600] transition-colors">Download DOCX</AuthenticatedDownload>
             </div>
           </div>
           {/* Stack profile */}
@@ -148,6 +163,13 @@ export default function RepoAudit() {
           </div>
         </div>
       )}
+      {!!versions?.length && <section className="border p-4 mt-6" data-testid="repository-audit-history">
+        <h2 className="font-bold">Preserved repository audit versions</h2>
+        {versions.map(version => <div key={version.id} className="border-t py-3 mt-2 text-xs">
+          <p>{version.archived_at} · {version.id}</p><p className="font-mono break-all">Snapshot: {version.snapshot_sha256}</p>
+          <AuthenticatedDownload path={`/repo-audit/${projectId}/history/${version.id}`} filename={`audit-version-${version.id}.json`} className="underline text-blue-700">Download preserved evidence</AuthenticatedDownload>
+        </div>)}
+      </section>}
     </div>
   );
 }

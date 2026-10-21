@@ -6,6 +6,7 @@ two-level review, and generates the author + team-lead reports and the gate pack
 Nothing is written back to the repo - read-only, observe-and-advise.
 """
 import os
+import hashlib
 import re
 import asyncio
 import shutil
@@ -17,6 +18,8 @@ from datetime import datetime, timezone
 import engine
 import ledger as ledger_mod
 from tool_adapters import run_repository_static_tools
+from audit_history import snapshot_project
+import auth
 from detectors import scan_secrets, scan_pii, scan_logging_leak, static_code_issues, get_project_key
 
 CODE_EXT = {".js", ".jsx", ".ts", ".tsx", ".py", ".java", ".go", ".rb", ".php", ".cs",
@@ -154,19 +157,62 @@ def _clone_and_scan(git_url: str, token: str = None, key=None) -> dict:
 HIGH_PII = {"pii:aadhaar", "pii:pan", "pii:card_number", "pii:gstin"}
 
 
-async def ingest_repo(db, git_url: str, name: str = None, git_token: str = None):
+async def ingest_repo(db, git_url: str, name: str = None, git_token: str = None, actor=None):
+    """Serialize re-audits for one repository and restrict existing-project access."""
+    from datetime import timedelta
+    from pymongo import ReturnDocument
+    from pymongo.errors import DuplicateKeyError
+    if not re.fullmatch(r'https://github\.com/[\w.\-]+/[\w.\-]+/?', git_url.strip()):
+        raise ValueError('A valid HTTPS GitHub repository URL is required.')
+    if not actor:
+        raise ValueError('An authenticated audit owner is required.')
+    canonical_url = git_url.strip().rstrip('/')
+    existing = await db.projects.find_one({'repo_url': {'$in': [canonical_url, canonical_url + '/']}, 'source': 'github_live'}, {'_id': 0})
+    if existing:
+        await auth.require_project_access(actor, existing['id'])
+        if not set(await auth.roles_for(actor['id'], existing['id'])) & auth.GOVERNANCE_ROLES:
+            raise ValueError('Project governance role required for a repository re-audit.')
+    lock_id = hashlib.sha256(git_url.strip().rstrip('/').lower().encode()).hexdigest()
+    owner = str(uuid4())
+    now = datetime.now(timezone.utc)
+    try:
+        await db.repo_audit_locks.find_one_and_update(
+            {'_id': lock_id, '$or': [{'expires_at': {'$lt': now}}, {'owner': owner}]},
+            {'$set': {'owner': owner, 'expires_at': now + timedelta(minutes=30)}},
+            upsert=True, return_document=ReturnDocument.AFTER)
+    except DuplicateKeyError:
+        raise AuditAlreadyRunning('A repository audit is already running for this repository.') from None
+    try:
+        result = await _ingest_repo(db, git_url.strip().rstrip('/'), name, git_token)
+        await ledger_mod.append_to_ledger(db, 'repository_audit_completed', result['audit']['id'], {
+            'project_id': result['project']['id'], 'actor_user_id': actor['id'],
+            'audit_version_id': result['audit_version_id'],
+            'tools': [{'tool_id': item['tool_id'], 'status': item['status'],
+                       'output_sha256': item.get('output_sha256')} for item in result['tool_assessments']]})
+        return result
+    finally:
+        await db.repo_audit_locks.delete_one({'_id': lock_id, 'owner': owner})
+
+
+class AuditAlreadyRunning(RuntimeError):
+    pass
+
+
+async def _ingest_repo(db, git_url: str, name: str = None, git_token: str = None):
     if not re.match(r"^https://github\.com/[\w.\-]+/[\w.\-]+/?$", git_url.strip()):
         raise ValueError("Please provide a valid public GitHub repository URL, e.g. https://github.com/org/repo")
 
     git_url_c = git_url.strip()
     # Resolve the project (re-audit reuses the same project) and its per-project masking key
     # BEFORE scanning, so every evidence hash is keyed to this project.
-    existing = await db.projects.find_one({"repo_url": git_url_c, "source": "github_live"}, {"_id": 0})
+    existing = await db.projects.find_one({"repo_url": {'$in': [git_url_c, git_url_c + '/']}, "source": "github_live"}, {"_id": 0})
     pid = existing["id"] if existing else str(uuid4())
     pkey = await get_project_key(db, pid)
 
     scan = await asyncio.to_thread(_clone_and_scan, git_url_c, git_token, pkey)
     profile, scanned = scan["profile"], scan["scanned"]
+    tool_assessments = scan['tool_assessments']
+    audit_version_id = str(uuid4())
 
     repo_name = name or git_url_c.rstrip("/").split("/")[-1]
     now = datetime.now(timezone.utc).isoformat()
@@ -174,6 +220,9 @@ async def ingest_repo(db, git_url: str, name: str = None, git_token: str = None)
     # Re-audit in place: reuse an existing project for the same repo URL.
     if existing:
         project = existing
+        snapshot = await snapshot_project(db, project)
+        await ledger_mod.append_to_ledger(db, 'repository_audit_archived', snapshot['id'], {
+            'project_id': pid, 'snapshot_sha256': snapshot['snapshot_sha256'], 'record_count': len(snapshot['records'])})
         for coll in ("findings", "events", "reports", "repo_audits"):
             await db[coll].delete_many({"project_id": pid})
         await db.projects.update_one({"id": pid}, {"$set": {"stage": "Repository Audit", "last_audited_at": now}})
@@ -190,6 +239,7 @@ async def ingest_repo(db, git_url: str, name: str = None, git_token: str = None)
 
     event = {
         "id": str(uuid4()), "project_id": project["id"], "event_type": "repo_audit",
+        'audit_version_id': audit_version_id,
         "source_ref": git_url, "triggered_by": "A21", "controls_triggered": ["CTRL-06", "CTRL-07", "CTRL-08", "CTRL-10"],
         "created_at": now,
     }
@@ -302,6 +352,26 @@ async def ingest_repo(db, git_url: str, name: str = None, git_token: str = None)
         for e in orphans[:25]:
             findings[-1]["evidence"].append({"type": "untested_endpoint", "masked": f"{e['method']} {e['path']}", "hash": ""})
 
+    # Scanner findings retain their actual run identity; availability is not execution.
+    for assessment in tool_assessments:
+        for item in assessment.get('findings', []):
+            severity = str(item.get('severity', 'medium')).lower()
+            severity = {'error': 'high', 'warning': 'medium', 'info': 'low'}.get(severity, severity)
+            if severity not in ('critical', 'high', 'medium', 'low', 'info'):
+                severity = 'medium'
+            finding = spec_finding('CTRL-10', 'External Static Tool Finding', 'A05', severity, 'FAIL',
+                f"{assessment['tool_id']}: {item.get('rule_id', 'rule')} - {item.get('summary', 'Review scanner evidence')}",
+                'Review the cited rule and source location, apply the appropriate fix, and rerun this tool.',
+                ['static', assessment['tool_id']])
+            finding['tool_id'] = assessment['tool_id']
+            finding['method'] = 'external_static_tool'
+            finding['level2_status'] = 'not_independently_reviewed'
+            finding['tool_output_sha256'] = assessment.get('output_sha256')
+            finding['evidence'] = [{'type': 'static_tool', **item, 'masked': item.get('summary', ''),
+                                    'hash': assessment.get('output_sha256', '')}]
+            findings.append(finding)
+    for finding in findings:
+        finding['audit_version_id'] = audit_version_id
     if findings:
         await db.findings.insert_many([dict(f) for f in findings])
         for f in findings:
@@ -316,6 +386,7 @@ async def ingest_repo(db, git_url: str, name: str = None, git_token: str = None)
 
     audit = {
         "id": str(uuid4()), "project_id": project["id"], "github_url": git_url,
+        'audit_version_id': audit_version_id, 'tool_assessments': tool_assessments,
         "detected_languages": list(profile["languages"].keys()),
         "frameworks": profile["frameworks"],
         "suggested_integrity_tier": tier,
@@ -331,6 +402,11 @@ async def ingest_repo(db, git_url: str, name: str = None, git_token: str = None)
 
     author_report = await engine.generate_author_report(db, project, event, findings)
     team_lead_report = await engine.generate_team_lead_report(db, project, event, findings)
+    for report in (author_report, team_lead_report):
+        report['audit_version_id'] = audit_version_id
+        await db.reports.update_one({'id': report['id']}, {'$set': {'audit_version_id': audit_version_id}})
+    await db.projects.update_one({'id': pid}, {'$set': {'current_audit_version_id': audit_version_id}})
+    project['current_audit_version_id'] = audit_version_id
     gates = await engine.compute_gate_status(db, project["id"])
 
     by_sev, by_ctrl = {}, {}
@@ -346,4 +422,5 @@ async def ingest_repo(db, git_url: str, name: str = None, git_token: str = None)
                             "fail": sum(1 for f in findings if f["verdict"] == "FAIL")},
         "reports": [author_report, team_lead_report],
         "gates": gates,
+        'tool_assessments': tool_assessments, 'audit_version_id': audit_version_id,
     }

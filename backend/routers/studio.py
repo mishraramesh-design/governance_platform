@@ -539,7 +539,7 @@ async def create_studio_run_from_upload(
 @router.get("/runs")
 async def list_studio_runs(user=Depends(auth.get_current_user)):
     await auth.require_any_global_role(user, auth.GOVERNANCE_ROLES)
-    return await db.studio_runs.find({}, {"_id": 0, "requirements.text": 0}).sort("created_at", -1).to_list(100)
+    return await db.studio_runs.find({'created_by_user_id': user['id']}, {"_id": 0, "requirements.text": 0}).sort("created_at", -1).to_list(100)
 
 
 @router.get("/runs/{run_id}")
@@ -562,9 +562,11 @@ async def run_studio_repository_audit(run_id: str, user=Depends(auth.get_current
     if not github_url:
         raise HTTPException(400, "This studio run has no GitHub repository URL.")
     try:
-        result = await repo_ingest.ingest_repo(db, github_url)
+        result = await repo_ingest.ingest_repo(db, github_url, actor=user)
         project = result["project"]
-        await auth.ensure_project_assignments(project["id"])
+        await auth.ensure_project_assignments(project["id"], user)
+    except repo_ingest.AuditAlreadyRunning as exc:
+        raise HTTPException(409, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except RuntimeError as exc:

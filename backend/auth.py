@@ -8,6 +8,7 @@ Design:
 """
 import hashlib
 import secrets
+import os
 from datetime import datetime, timezone
 
 from fastapi import Depends, HTTPException, status
@@ -20,6 +21,10 @@ bearer_scheme = HTTPBearer(auto_error=False)
 # Roles that may perform platform-wide (non project-scoped) governance actions.
 GOVERNANCE_ROLES = {"Programme Manager", "Quality Lead"}
 ADMIN_ROLE = "Programme Manager"
+
+
+def demo_enabled():
+    return os.environ.get("DEMO_MODE", "false").lower() == "true"
 
 
 def now_iso():
@@ -40,6 +45,8 @@ async def _resolve(credentials):
     token_doc = await db.api_tokens.find_one(
         {"token_hash": hash_token(credentials.credentials), "revoked": False}, {"_id": 0})
     if not token_doc:
+        return None
+    if not demo_enabled() and token_doc.get('created_by') in ('seed', 'demo-login'):
         return None
     user = await db.users.find_one({"id": token_doc["user_id"], "active": True}, {"_id": 0})
     if not user:
@@ -72,10 +79,22 @@ async def roles_for(user_id: str, project_id: str):
 
 
 async def all_roles(user_id: str):
-    s = set()
+    user = await db.users.find_one({'id': user_id}, {'platform_roles': 1})
+    s = set((user or {}).get('platform_roles', []))
     async for ra in db.role_assignments.find({"user_id": user_id}, {"_id": 0}):
         s.update(ra.get("roles", []))
     return s
+
+
+async def is_platform_admin(user):
+    if ADMIN_ROLE in user.get('platform_roles', []):
+        return True
+    return demo_enabled() and ADMIN_ROLE in await all_roles(user['id'])
+
+
+async def require_platform_admin(user):
+    if not await is_platform_admin(user):
+        raise HTTPException(403, 'Platform administrator role required.')
 
 
 async def require_project_role(user: dict, project_id: str, role: str):
@@ -86,6 +105,16 @@ async def require_project_role(user: dict, project_id: str, role: str):
             f"Role '{role}' is not assigned to {user['name']} for this project "
             f"(assigned: {', '.join(assigned) or 'none'}).")
     return role
+
+
+async def require_project_access(user, project_id):
+    if not project_id or not await roles_for(user['id'], project_id):
+        raise HTTPException(403, 'Access to this project is not assigned.')
+
+
+async def visible_project_ids(user):
+    return [item['project_id'] async for item in db.role_assignments.find(
+        {'user_id': user['id'], 'roles': {'$ne': []}}, {'project_id': 1, '_id': 0})]
 
 
 async def require_any_global_role(user: dict, roles=GOVERNANCE_ROLES):
@@ -125,9 +154,17 @@ async def enforce_segregation(user: dict, finding: dict):
             "cannot triage, accept or close it. Another reviewer must decide.")
 
 
-async def ensure_project_assignments(project_id: str):
+async def ensure_project_assignments(project_id: str, owner=None):
     """Give every demo user their standing role set on a newly created project so the
     project is immediately usable for triage/adjudication."""
+    if not demo_enabled():
+        if owner:
+            roles = sorted(set(await all_roles(owner['id'])) & GOVERNANCE_ROLES)
+            if roles:
+                await db.role_assignments.update_one({'user_id': owner['id'], 'project_id': project_id},
+                    {'$setOnInsert': {'id': generate_token()[:12], 'user_id': owner['id'],
+                        'project_id': project_id, 'roles': roles, 'created_at': now_iso()}}, upsert=True)
+        return
     async for u in db.users.find({}, {"_id": 0}):
         if await db.role_assignments.find_one({"user_id": u["id"], "project_id": project_id}):
             continue

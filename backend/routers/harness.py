@@ -8,6 +8,7 @@ from database import db
 import gateway
 import agent_profiles
 import auth
+import ledger as ledger_mod
 
 router = APIRouter(prefix="/harness")
 
@@ -114,7 +115,7 @@ async def get_config(project_id: str | None = Query(None)):
 
 
 @router.put("/config")
-async def put_config(body: ConfigUpdate):
+async def put_config(body: ConfigUpdate, user=Depends(auth.get_current_user)):
     current = await gateway.get_config(db, body.project_id)
     incoming = dict(body.capability_profiles or {})
     result = {}
@@ -151,6 +152,10 @@ async def put_config(body: ConfigUpdate):
     result["none"] = None
     saved = await gateway.save_config(db, result, body.zero_llm_mode, body.sovereignty,
                                       body.max_llm_calls_per_run, project_id=body.project_id)
+    await ledger_mod.append_to_ledger(db, 'model_configuration_changed', body.project_id or 'platform', {
+        'actor_user_id': user['id'], 'project_id': body.project_id,
+        'zero_llm_mode': body.zero_llm_mode, 'max_llm_calls_per_run': body.max_llm_calls_per_run,
+        'roles_updated': sorted(incoming)})
     return {"capability_profiles": {k: _public_profile(v) for k, v in saved["capability_profiles"].items()},
             "zero_llm_mode": saved["zero_llm_mode"], "max_llm_calls_per_run": saved["max_llm_calls_per_run"],
             "sovereignty": saved["sovereignty"], "project_id": body.project_id}
