@@ -327,3 +327,24 @@ async def complete_agent(agent_id: str, task: str, masked_input: str, level: int
                           cfg["max_llm_calls_per_run"] if run_id else None)
     res["capability_profile"] = role
     return res
+
+
+async def complete_workspace(system: str, masked_input: str, *, db, run_id, allow_cloud=False, project_id=None):
+    """Use Studio's maker profile and cost budget; browser execution stays outside the model.
+
+    Page/document text must already be masked. Cloud transmission requires the
+    workspace owner's explicit consent; local-only and sovereignty still apply.
+    """
+    cfg = await get_config(db, project_id)
+    profile = cfg['capability_profiles'].get('maker')
+    if cfg['zero_llm_mode']:
+        return {'mode': 'zero-llm', 'text': '', 'model_used': 'none'}
+    tier = 'T2' if allow_cloud else 'T1'
+    if profile and profile.get('provider') in CLOUD_PROVIDERS and (not allow_cloud or cfg['sovereignty'].get(tier)):
+        return {'mode': 'sovereignty-blocked', 'text': '', 'model_used': 'none'}
+    record = {'id': str(uuid4()), 'task': 'interactive_workspace', 'run_id': run_id,
+              'project_id': project_id,
+              'capability_profile': 'maker', 'tier': tier, 'masked_input_hash': _hash(masked_input),
+              'timestamp': datetime.now(timezone.utc).isoformat()}
+    return await _dispatch(system, masked_input, profile, 'interactive_workspace', record, db, '',
+                           cfg['max_llm_calls_per_run'])

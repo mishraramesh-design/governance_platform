@@ -35,10 +35,14 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       ZAP_API_URL: ${ZAP_API_URL:-http://zap:8080}
       ZAP_API_KEY: ${ZAP_API_KEY:?Set ZAP_API_KEY to a long random value}
+      BROWSER_WORKER_URL: http://browser:8010
+      BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:?Set BROWSER_WORKER_TOKEN in .env}
     depends_on:
       mongo:
         condition: service_healthy
       zap:
+        condition: service_healthy
+      browser:
         condition: service_healthy
     networks:
       - database
@@ -49,6 +53,7 @@ services:
     restart: unless-stopped
     command:
       - zap.sh
+      - -Xmx1536m
       - -daemon
       - -host
       - 0.0.0.0
@@ -61,8 +66,8 @@ services:
       - -config
       - api.addrs.addr.regex=true
     shm_size: 512mb
-    mem_limit: 1g
-    cpus: 1.0
+    mem_limit: 3g
+    cpus: 2.0
     environment:
       ZAP_API_KEY: ${ZAP_API_KEY:?Set ZAP_API_KEY to a long random value}
     healthcheck:
@@ -72,6 +77,29 @@ services:
       interval: 10s
       timeout: 5s
       retries: 30
+    networks:
+      - app
+
+  browser:
+    build:
+      context: .
+      dockerfile: Dockerfile.browser
+    image: ${DOCKERHUB_USERNAME:-local}/governance-ai-studio-browser:latest
+    restart: unless-stopped
+    init: true
+    environment:
+      BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:?Set BROWSER_WORKER_TOKEN in .env}
+    shm_size: 512mb
+    mem_limit: 2g
+    cpus: 2.0
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import os,urllib.request; urllib.request.urlopen(urllib.request.Request(\"http://127.0.0.1:8010/health\",headers={\"X-Browser-Token\":os.environ[\"BROWSER_WORKER_TOKEN\"]}),timeout=5)'"]
+      interval: 15s
+      timeout: 10s
+      start_period: 30s
+      retries: 10
     networks:
       - app
 

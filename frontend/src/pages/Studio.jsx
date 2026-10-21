@@ -20,6 +20,8 @@ const stateStyle = {
 };
 
 export default function Studio() {
+  const [pollError, setPollError] = useState(false);
+  const [clockNow, setClockNow] = useState(Date.now());
   const [runs, setRuns] = useState([]);
   const [result, setResult] = useState(null);
   const [webScanMode, setWebScanMode] = useState("passive");
@@ -94,6 +96,17 @@ export default function Studio() {
     onError: (error) => toast.error(error?.response?.data?.detail || "Could not start web security assessment"),
   });
 
+  const cancelWebScan = useMutation({
+    mutationFn: () => api.post(`/studio/runs/${result.id}/web-security-scan/cancel`),
+    onSuccess: () => { setResult((current) => ({ ...current, web_security_scan: { ...current.web_security_scan, cancel_requested: true } })); toast.info("Stop requested; waiting for scanner cleanup"); },
+    onError: (error) => toast.error(error?.response?.data?.detail || "Could not request scanner stop"),
+  });
+
+  useEffect(() => {
+    const timer = setInterval(() => setClockNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   const runFrameworkAssessment = useMutation({
     mutationFn: () => api.post(`/studio/runs/${result.id}/framework-assessment`, {
       framework, staging_authorized: frameworkAuthorized,
@@ -112,7 +125,7 @@ export default function Studio() {
   useEffect(() => {
     if (!result?.id || (!["queued", "running"].includes(result.web_security_scan?.status) && !["queued", "running"].includes(result.framework_assessment?.status))) return undefined;
     const timer = setInterval(() => {
-      api.get(`/studio/runs/${result.id}`).then((response) => setResult(response.data)).catch(() => {});
+      api.get(`/studio/runs/${result.id}`).then((response) => { setResult((current) => current?.id === response.data.id ? response.data : current); setPollError(false); }).catch(() => setPollError(true));
     }, 3000);
     return () => clearInterval(timer);
   }, [result?.id, result?.web_security_scan?.status, result?.framework_assessment?.status]);
@@ -125,6 +138,7 @@ export default function Studio() {
   return (
     <div data-testid="governance-studio-page">
       <PageHeader title="Governance AI Studio" subtitle="One governed intake for repository, requirements, web target and runtime evidence. Deterministic checks produce evidence; models can assist analysis, while accountable humans retain gate decisions." />
+      <Link to="/testing-workspace" className="inline-block mb-5 border border-black bg-black text-[#FFE600] px-4 py-3 text-sm font-bold">Open AI Testing Workspace - browser and chat</Link>
 
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.7fr)] gap-6">
         <form onSubmit={(event) => { event.preventDefault(); createRun.mutate(); }} className="border border-gray-200 p-5 space-y-4">
@@ -188,7 +202,7 @@ export default function Studio() {
           <div className="border border-gray-200 p-3"><div className="text-[10px] uppercase text-gray-400">Runtime errors / 5xx</div><strong>{result.runtime_summary ? `${result.runtime_summary.error_lines} / ${result.runtime_summary.http_5xx_lines}` : "No logs supplied"}</strong></div>
           <div className="border border-gray-200 p-3"><div className="text-[10px] uppercase text-gray-400">Known sensitive log signals</div><strong>{result.runtime_summary ? `${result.runtime_summary.secret_signal_count ?? 0} secret · ${result.runtime_summary.pii_signal_count ?? 0} PII` : "No logs supplied"}</strong><div className="mt-1 text-[10px] text-gray-500">{result.runtime_summary?.sensitive_data_review?.replaceAll("_", " ") || "Raw logs are not retained"}</div></div>
           <div className="border border-gray-200 p-3"><div className="text-[10px] uppercase text-gray-400">Test outlines · not executed</div><strong>{result.test_case_draft_count ?? 0}</strong></div>
-          <div className="border border-gray-200 p-3"><div className="text-[10px] uppercase text-gray-400">Target contact</div><strong>{result.web_security_scan?.status === "completed" ? "Contacted by approved baseline" : ["queued", "running"].includes(result.web_security_scan?.status) ? "Baseline in progress" : result.web_security_scan?.status === "failed" ? "Contact status uncertain" : "Not contacted"}</strong></div>
+          <div className="border border-gray-200 p-3"><div className="text-[10px] uppercase text-gray-400">Target contact</div><strong>{result.web_security_scan?.status === "completed" ? "Contacted by approved scan" : ["queued", "running"].includes(result.web_security_scan?.status) ? "Web assessment in progress" : result.web_security_scan ? "Contact status uncertain; inspect scan evidence" : "Not contacted"}</strong></div>
         </div>
         <div className="px-4 pb-4 space-y-2">
           <h3 className="text-[10px] uppercase tracking-[0.2em] font-bold text-gray-500">Deterministic stage plan and gaps</h3>
@@ -239,10 +253,31 @@ export default function Studio() {
           <button type="button" onClick={() => runWebSecurityScan.mutate()} disabled={runWebSecurityScan.isPending || ["queued", "running"].includes(result.web_security_scan?.status) || (webScanMode === "active" && !activeScanStagingConfirmed)} className="mt-3 bg-black text-[#FFE600] px-3 py-2 text-xs font-bold disabled:opacity-50">
             {runWebSecurityScan.isPending ? "Queueing…" : result.web_security_scan?.status === "running" ? "Assessment running…" : result.web_security_scan?.status === "queued" ? "Assessment queued…" : result.web_security_scan?.status === "completed" ? "Run assessment again" : "Run " + webScanMode + " assessment"}
           </button>
+          {pollError && <p role="alert" className="text-xs text-red-800 mt-2">Live status unavailable. The scanner may still be running. Do not queue another job.</p>}
+          {["queued", "running"].includes(result.web_security_scan?.status) && <div role="status" className="mt-3 text-xs space-y-2" data-testid="scan-live-progress">
+            <p>Target: {result.source.target_url}</p>
+            <p>Stage: {(result.web_security_scan.stage || "queued").replaceAll("_", " ")}
+              {Number.isFinite(result.web_security_scan.progress?.stage_percent) ? ` | ${result.web_security_scan.progress.stage_percent}% of this stage` : ""}
+              {Number.isFinite(result.web_security_scan.progress?.pending_records) ? ` | ${result.web_security_scan.progress.pending_records} records pending` : ""}</p>
+            <p>Elapsed: {Math.max(0, Math.floor((clockNow - Date.parse(result.web_security_scan.started_at || result.web_security_scan.queued_at)) / 1000))} seconds | Job limit: {result.web_security_scan.job_timeout_seconds || 600} seconds plus cleanup</p>
+            {result.web_security_scan.heartbeat_at && <p>Last scanner update: {new Date(result.web_security_scan.heartbeat_at).toLocaleTimeString()}
+              {clockNow - Date.parse(result.web_security_scan.heartbeat_at) > 45000 ? " | Update delayed; scanner status needs attention" : ""}</p>}
+            <button type="button" disabled={cancelWebScan.isPending || result.web_security_scan.cancel_requested || result.web_security_scan.stage === "ai_triage"} onClick={() => cancelWebScan.mutate()} className="border border-red-600 text-red-800 px-3 py-2 disabled:opacity-50">{result.web_security_scan.stage === "ai_triage" ? "Scanner finished; finalizing report..." : result.web_security_scan.cancel_requested ? "Stopping... waiting for cleanup" : "Stop scan"}</button>
+          </div>}
           {result.web_security_scan && <div className="mt-3 border-t border-blue-200 pt-3">
-            <div className="text-xs font-bold">{result.web_security_scan.status.replaceAll("_", " ")}{result.web_security_scan.status === "completed" ? ` · ${result.web_security_scan.mode.replaceAll("_", " ")} · ${result.web_security_scan.finding_count} findings · ${result.web_security_scan.scanner?.name} ${result.web_security_scan.scanner?.version} · ${result.web_security_scan.scanner?.coverage_status} coverage` : ""}</div>
+            <div className="text-xs font-bold">{result.web_security_scan.status.replaceAll("_", " ")}{result.web_security_scan.status === "completed" ? ` · ${result.web_security_scan.mode.replaceAll("_", " ")} · ${result.web_security_scan.finding_count} findings · ${result.web_security_scan.scanner?.name} ${result.web_security_scan.scanner?.version} · ${result.web_security_scan.scanner?.coverage_status?.replaceAll("_", " ")}` : ""}</div>
             {result.web_security_scan.error && <p className="text-xs text-red-800 mt-1">{result.web_security_scan.error}</p>}
             {result.web_security_scan.status === "completed" && <>
+              <button type="button" className="border border-blue-600 px-3 py-2 text-xs" onClick={() => {
+                const blob = new Blob([JSON.stringify({ assessment_id: result.id, assessment_name: result.name, scan: result.web_security_scan }, null, 2)], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a"); link.href = url; link.download = `studio-scan-${result.web_security_scan.attempt_id || result.id}.json`; link.click();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+              }}>Download evidence report (JSON)</button>
+              <p className="text-xs mt-2">Target: {result.web_security_scan.target_url} | Duration: {result.web_security_scan.elapsed_seconds ?? "unknown"} seconds</p>
+              <p className="text-xs mt-2">{result.web_security_scan.scanner?.coverage_note || "Bounded unauthenticated scan; completion does not establish full application coverage."}</p>
+              {result.web_security_scan.severity_counts && <p className="text-xs mt-2">{Object.entries(result.web_security_scan.severity_counts).map(([risk, count]) => `${risk}: ${count}`).join(" | ")}</p>}
+
               {result.web_security_scan.ai_advisory && <article className="mt-3 border border-purple-200 bg-purple-50 p-3 text-xs" data-testid="studio-security-ai-advisory">
                 <div className="font-bold">AI-assisted triage · {result.web_security_scan.ai_advisory.model_used || "deterministic fallback"}</div>
                 <p className="mt-2 whitespace-pre-wrap">{result.web_security_scan.ai_advisory.text}</p>
@@ -251,7 +286,7 @@ export default function Studio() {
               {!result.web_security_scan.findings?.length && <p className="text-xs text-gray-700 mt-2">No alerts were returned within this scan's coverage. This does not establish that the site is secure.</p>}
               <div className="mt-2 space-y-2">
                 {result.web_security_scan.findings?.map((finding, index) => <article key={`${finding.scanner_id}-${index}`} className="border border-blue-200 bg-white p-3 text-xs">
-                  <div className="flex flex-wrap justify-between gap-2"><strong>{finding.name}</strong><span className="uppercase font-bold">{finding.risk} · {finding.confidence}</span></div>
+                  <div className="flex flex-wrap justify-between gap-2"><strong>{finding.name}</strong><span className="uppercase font-bold">Risk: {finding.risk} · Confidence: {finding.confidence}</span></div>
                   <div className="font-mono text-[10px] break-all mt-1">{finding.method} {finding.url}{finding.parameter ? ` · ${finding.parameter}` : ""}</div>
                   {finding.description && <p className="mt-2 whitespace-pre-wrap">{finding.description}</p>}
                   {finding.evidence && <p className="mt-1 text-gray-600 break-words">Evidence: {finding.evidence}</p>}

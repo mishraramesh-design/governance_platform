@@ -12,6 +12,7 @@ import seed_data
 from routers import catalog, projects, events, reports, assurance, dashboard, harness, mlops
 from routers import auth as auth_routes, admin as admin_routes, routing as routing_routes
 from routers import studio as studio_routes
+from routers import testing_workspace as testing_workspace_routes
 
 app = FastAPI(title="SDLC Governance & Assurance Platform")
 api_router = APIRouter(prefix="/api")
@@ -34,6 +35,7 @@ api_router.include_router(auth_routes.router)
 api_router.include_router(admin_routes.router)
 api_router.include_router(routing_routes.router)
 api_router.include_router(studio_routes.router)
+api_router.include_router(testing_workspace_routes.router)
 
 app.include_router(api_router)
 
@@ -50,6 +52,11 @@ logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 async def seed_on_startup():
+    await testing_workspace_routes.recover_sessions()
+    try:
+        await studio_routes.recover_scanner()
+    except Exception:
+        logger.error("ZAP orphan recovery failed; new web scans are blocked until backend restart.")
     try:
         await db.studio_runs.update_many(
             {"web_security_scan.status": {"$in": ["queued", "running"]}},

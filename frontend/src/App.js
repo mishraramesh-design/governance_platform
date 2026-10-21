@@ -29,6 +29,7 @@ import Runtime from "@/pages/Runtime";
 import About from "@/pages/About";
 import Admin from "@/pages/Admin";
 import Studio from "@/pages/Studio";
+import TestingWorkspace from "@/pages/TestingWorkspace";
 
 function App() {
   return (
@@ -39,6 +40,7 @@ function App() {
             <Routes>
               <Route path="/" element={<Dashboard />} />
               <Route path="/studio" element={<Studio />} />
+              <Route path="/testing-workspace" element={<TestingWorkspace />} />
               <Route path="/projects" element={<Projects />} />
               <Route path="/agents" element={<Agents />} />
               <Route path="/harness" element={<AgentHarness />} />

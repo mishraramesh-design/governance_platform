@@ -28,7 +28,10 @@ class GovernanceToolAdapterTests(unittest.TestCase):
             "deadline": "deadline", "scanPolicyName": "test-policy",
             "attackStrength": "LOW", "alertThreshold": "MEDIUM",
         })
-        self.assertEqual([call.kwargs["Integer"] for call in calls[1:]], [3, 1, 1])
+        self.assertEqual([call.kwargs["Integer"] for call in calls[1:4]], [3, 1, 1])
+        self.assertEqual(calls[4].args, ("ascan/action/disableScanners",))
+        self.assertEqual(calls[4].kwargs["ids"], "10047,90034,40044")
+        self.assertEqual(calls[4].kwargs["scanPolicyName"], "test-policy")
 
     def test_inventory_covers_every_recommended_framework(self):
         self.assertEqual({item["id"] for item in framework_inventory()}, set(TOOL_SPECS))

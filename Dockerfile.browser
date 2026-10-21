@@ -1,0 +1,14 @@
+FROM python:3.11-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/worker
+WORKDIR /worker
+RUN pip install --no-cache-dir fastapi==0.110.1 uvicorn==0.34.0 "pydantic>=2.6.4" playwright==1.64.0 \
+    && playwright install --with-deps chromium \
+    && useradd --create-home --uid 10001 browser \
+    && mkdir -p /home/browser/.cache \
+    && cp -a /root/.cache/ms-playwright /home/browser/.cache/ \
+    && chown -R browser:browser /home/browser
+ENV HOME=/home/browser PLAYWRIGHT_BROWSERS_PATH=/home/browser/.cache/ms-playwright
+COPY backend/browser_worker.py backend/workspace_core.py backend/detectors.py ./
+USER browser
+EXPOSE 8010
+CMD ["uvicorn", "browser_worker:app", "--host", "0.0.0.0", "--port", "8010", "--no-access-log"]

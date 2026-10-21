@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 from database import db
 from models import GovernanceStudioRunRequest, StudioWebScanRequest, StudioFrameworkAssessmentRequest
-from web_security_scan import execute_zap_baseline, validate_public_target, validate_scan_exclusions
+from web_security_scan import execute_zap_baseline, validate_public_target, validate_scan_exclusions, ZapApi, ScannerCleanupFailed
 from studio_planning import (build_run_plan, draft_test_cases, extract_candidate_requirements,
                              framework_catalog, performance_assessment_plan_update, sha256_text,
                              summarize_runtime_logs)
@@ -33,6 +33,27 @@ logger = logging.getLogger(__name__)
 _web_scan_lock = asyncio.Lock()
 _web_scan_enqueue_lock = asyncio.Lock()
 _web_scan_tasks = set()
+_scanner_ready = False
+MAX_JOB_SECONDS = 600
+
+
+class ScanCancelled(RuntimeError):
+    pass
+
+
+async def recover_scanner():
+    """Stop orphan requests before accepting work on the dedicated single-worker daemon."""
+    global _scanner_ready
+    _scanner_ready = False
+    if not _zap_enabled():
+        return
+    zap = ZapApi()
+    try:
+        await zap.get("spider/action/stopAllScans")
+        await zap.get("ascan/action/stopAllScans")
+        _scanner_ready = True
+    finally:
+        await zap.close()
 _framework_assessment_lock = asyncio.Lock()
 _framework_assessment_tasks = set()
 
@@ -114,7 +135,18 @@ async def _create_studio_run(payload: GovernanceStudioRunRequest, user):
 
 async def _run_zap_for_record(run_id: str, record: dict, user_id: str, mode="passive", excluded_paths=None):
     """Run a serialized, scope-bounded ZAP assessment and retain normalized findings."""
+    global _scanner_ready
     async with _web_scan_lock:
+        started_at = datetime.now(timezone.utc)
+        async def progress(stage, details):
+            current = await db.studio_runs.find_one({"id": run_id}, {"web_security_scan.cancel_requested": 1})
+            if stage != "ai_triage" and (current or {}).get("web_security_scan", {}).get("cancel_requested"):
+                raise ScanCancelled("operator_cancelled")
+            await db.studio_runs.update_one({"id": run_id}, {"$set": {
+                "web_security_scan.stage": stage, "web_security_scan.progress": details,
+                "web_security_scan.heartbeat_at": datetime.now(timezone.utc).isoformat(),
+                "web_security_scan.elapsed_seconds": int((datetime.now(timezone.utc) - started_at).total_seconds()),
+            }})
         await db.studio_runs.update_one({"id": run_id}, {"$set": {"web_security_scan.status": "running",
                                                                     "web_security_scan.started_at": datetime.now(timezone.utc).isoformat()}})
         try:
@@ -124,8 +156,17 @@ async def _run_zap_for_record(run_id: str, record: dict, user_id: str, mode="pas
             if datetime.now(timezone.utc) >= expires_at:
                 raise RuntimeError("authorization_window_expired")
             target = record["source"]["target_url"]
-            findings, metadata = await execute_zap_baseline(target, run_id, expires_at,
-                                                              active=(mode == "active"), excluded_paths=excluded_paths)
+            findings, metadata = await asyncio.wait_for(
+                execute_zap_baseline(target, run_id, expires_at, active=(mode == "active"),
+                                     excluded_paths=excluded_paths, progress=progress),
+                timeout=min(MAX_JOB_SECONDS, max(1, (expires_at - datetime.now(timezone.utc)).total_seconds())),
+            )
+            await db.studio_runs.update_one({"id": run_id}, {"$set": {
+                "web_security_scan.findings": findings, "web_security_scan.scanner": metadata,
+                "web_security_scan.finding_count": len(findings),
+                "web_security_scan.deterministic_evidence_saved_at": datetime.now(timezone.utc).isoformat(),
+            }})
+            await progress("ai_triage", {})
             # AI is an optional analysis layer over normalized scanner evidence. It
             # cannot make requests to the target or change deterministic findings.
             advisory_input = {
@@ -137,20 +178,27 @@ async def _run_zap_for_record(run_id: str, record: dict, user_id: str, mode="pas
                               "remediation": finding["remediation"], "cwe_id": finding["cwe_id"]}
                              for index, finding in enumerate(findings[:30])],
             }
-            advisory = await gateway.complete_agent(
-                "A05", "web_security_findings_triage", json.dumps(advisory_input),
-                level=1, db=db, tier="T2", run_id=run_id,
-            )
+            try:
+                advisory = await asyncio.wait_for(gateway.complete_agent(
+                    "A05", "web_security_findings_triage", json.dumps(advisory_input),
+                    level=1, db=db, tier="T2", run_id=run_id,
+                ), timeout=30)
+            except Exception:
+                advisory = {"text": "AI triage unavailable. Deterministic scanner evidence is retained.", "mode": "unavailable"}
             completed_at = datetime.now(timezone.utc).isoformat()
             queued_scan = record.get("web_security_scan") or {}
             result = {
                 "status": "completed", "mode": "unauthenticated_active_scan" if mode == "active" else "unauthenticated_passive_baseline",
                 "started_by_user_id": user_id, "completed_at": completed_at,
+                "attempt_id": queued_scan.get("attempt_id", str(uuid4())),
+                "queued_at": queued_scan.get("queued_at"), "started_at": started_at.isoformat(),
+                "stage": "finished", "elapsed_seconds": int((datetime.now(timezone.utc) - started_at).total_seconds()),
                 "active_scan_staging_confirmed": bool(queued_scan.get("active_scan_staging_confirmed")),
                 "target_url": target, "scope": record["source"]["authorization_scope"],
                 "excluded_paths": sorted(set(excluded_paths or [])),
                 "authorization_reference": record["source"]["authorization_reference"],
                 "scanner": metadata, "finding_count": len(findings), "findings": findings,
+                "severity_counts": {risk: sum(f["risk"] == risk for f in findings) for risk in ("High", "Medium", "Low", "Informational")},
                 "ai_advisory": {"text": advisory.get("text", ""), "mode": advisory.get("mode"),
                                 "model_used": advisory.get("model_used"), "evidence_only": False,
                                 "note": "Advisory only. Verify each statement against deterministic findings; this is not scan evidence."},
@@ -168,20 +216,35 @@ async def _run_zap_for_record(run_id: str, record: dict, user_id: str, mode="pas
                 "ai_advisory_output_sha256": hashlib.sha256(advisory.get("text", "").encode()).hexdigest(),
             })
             result["ledger"] = {"seq": entry["seq"], "hash": entry["hash"], "entry_id": entry["id"]}
+            await db.studio_scan_attempts.insert_one({"run_id": run_id, **result})
             await db.studio_runs.update_one(
                 {"id": run_id},
                 {"$set": {"web_security_scan": result, "status": "partially_assessed",
-                          "plan.$[step].state": "completed_active_scan" if mode == "active" else "completed_passive_scan",
+                          "plan.$[step].state": "partial_scan" if metadata["coverage_status"] == "partial" else ("completed_active_scan" if mode == "active" else "completed_passive_scan"),
                           "plan.$[step].evidence": f"{len(findings)} OWASP ZAP {'active and passive' if mode == 'active' else 'passive'} alerts; ledger {entry['seq']}"}},
                 array_filters=[{"step.id": "WEB-01"}],
             )
-        except Exception as exc:
+        except (Exception, asyncio.CancelledError) as exc:
+            if isinstance(exc, ScannerCleanupFailed):
+                _scanner_ready = False
             logger.error("Web security baseline failed for studio run %s (%s)", run_id, type(exc).__name__)
-            failure = {"status": "failed", "queued_at": (record.get("web_security_scan") or {}).get("queued_at"),
+            failure = {"status": "cancelled" if isinstance(exc, ScanCancelled) else "timed_out" if isinstance(exc, TimeoutError) else "interrupted" if isinstance(exc, asyncio.CancelledError) else "failed", "queued_at": (record.get("web_security_scan") or {}).get("queued_at"),
                        "failed_at": datetime.now(timezone.utc).isoformat(),
-                       "error": "Scanner request failed. Check scanner availability and backend logs.",
+                       "started_at": started_at.isoformat(), "stage": "stopped",
+                       "elapsed_seconds": int((datetime.now(timezone.utc) - started_at).total_seconds()),
+                       "error": "Scanner stop could not be confirmed. Restart ZAP and backend before retrying." if isinstance(exc, ScannerCleanupFailed) else "Stopped by operator." if isinstance(exc, ScanCancelled) else "Job deadline reached; scan coverage is incomplete." if isinstance(exc, TimeoutError) else "Scanner disconnected or failed; inspect ZAP health and logs. No security verdict follows.",
                        "error_code": type(exc).__name__,
                        "mode": "unauthenticated_active_scan" if mode == "active" else "unauthenticated_passive_baseline"}
+            saved = await db.studio_runs.find_one({"id": run_id}, {"web_security_scan": 1})
+            saved_scan = (saved or {}).get("web_security_scan", {})
+            for key in ("findings", "scanner", "finding_count", "deterministic_evidence_saved_at"):
+                if key in saved_scan:
+                    failure[key] = saved_scan[key]
+            entry = await ledger_mod.append_to_ledger(db, "governance_studio_web_security_scan_stopped", run_id,
+                {"status": failure["status"], "error_code": failure["error_code"], "elapsed_seconds": failure["elapsed_seconds"]})
+            failure["ledger"] = {"seq": entry["seq"], "hash": entry["hash"], "entry_id": entry["id"]}
+            failure["attempt_id"] = (record.get("web_security_scan") or {}).get("attempt_id", str(uuid4()))
+            await db.studio_scan_attempts.insert_one({"run_id": run_id, **failure})
             await db.studio_runs.update_one(
                 {"id": run_id},
                 {"$set": {"web_security_scan": failure,
@@ -335,8 +398,8 @@ async def start_framework_assessment(run_id: str, request: StudioFrameworkAssess
 async def start_web_security_scan(run_id: str, request: StudioWebScanRequest = StudioWebScanRequest(), user=Depends(auth.get_current_user)):
     """Queue a bounded passive or explicitly attested low-strength active scan."""
     await auth.require_any_global_role(user, auth.GOVERNANCE_ROLES)
-    if not _zap_enabled():
-        raise HTTPException(503, "OWASP ZAP scanner is not configured for this deployment.")
+    if not _zap_enabled() or not _scanner_ready:
+        raise HTTPException(503, "ZAP is unavailable or orphan-scan recovery has not succeeded. Check scanner health and restart the backend.")
     record = await db.studio_runs.find_one({"id": run_id}, {"_id": 0})
     if not record:
         raise HTTPException(404, "studio run not found")
@@ -376,14 +439,39 @@ async def start_web_security_scan(run_id: str, request: StudioWebScanRequest = S
                     raise HTTPException(429, "Wait ten minutes between repeated scans of the same assessment.")
             except ValueError:
                 pass
-        queued = {"status": "queued", "mode": "unauthenticated_active_scan" if request.mode == "active" else "unauthenticated_passive_baseline",
+        queued = {"attempt_id": str(uuid4()), "status": "queued", "mode": "unauthenticated_active_scan" if request.mode == "active" else "unauthenticated_passive_baseline",
                   "queued_at": datetime.now(timezone.utc).isoformat(), "started_by_user_id": user["id"],
                   "active_scan_staging_confirmed": request.mode == "active" and request.active_scan_staging_confirmed,
-                  "excluded_paths": request.excluded_paths}
+                  "excluded_paths": request.excluded_paths, "stage": "queued",
+                  "job_timeout_seconds": MAX_JOB_SECONDS, "cancel_requested": False}
+        queue_entry = await ledger_mod.append_to_ledger(db, "governance_studio_web_scan_queued", run_id, {
+            "attempt_id": queued["attempt_id"], "mode": request.mode,
+            "authorization_reference": source["authorization_reference"],
+            "excluded_paths": request.excluded_paths, "started_by_user_id": user["id"],
+        })
+        queued["ledger"] = {"seq": queue_entry["seq"], "hash": queue_entry["hash"], "entry_id": queue_entry["id"]}
         await db.studio_runs.update_one({"id": run_id}, {"$set": {"web_security_scan": queued}})
         record["web_security_scan"] = queued
     _track_web_scan_task(asyncio.create_task(_run_zap_for_record(run_id, record, user["id"], request.mode, request.excluded_paths)))
     return {"id": run_id, "web_security_scan": queued}
+
+
+@router.get("/runs/{run_id}/web-security-scan/history")
+async def web_scan_history(run_id: str, user=Depends(auth.get_current_user)):
+    await auth.require_any_global_role(user, auth.GOVERNANCE_ROLES)
+    return await db.studio_scan_attempts.find({"run_id": run_id}, {"_id": 0, "findings": 0, "ai_advisory": 0}).sort("completed_at", -1).to_list(20)
+
+
+@router.post("/runs/{run_id}/web-security-scan/cancel", status_code=202)
+async def cancel_web_security_scan(run_id: str, user=Depends(auth.get_current_user)):
+    await auth.require_any_global_role(user, auth.GOVERNANCE_ROLES)
+    result = await db.studio_runs.update_one(
+        {"id": run_id, "web_security_scan.status": {"$in": ["queued", "running"]}},
+        {"$set": {"web_security_scan.cancel_requested": True}})
+    if not result.matched_count:
+        raise HTTPException(409, "No queued or running scan exists for this assessment.")
+    await ledger_mod.append_to_ledger(db, "governance_studio_scan_cancel_requested", run_id, {"user_id": user["id"]})
+    return {"cancel_requested": True, "message": "Stop requested; wait for scanner cleanup confirmation."}
 
 
 @router.post("/runs")
