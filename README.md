@@ -4,6 +4,7 @@ Governance AI Studio extends the IV&V Governance Platform into a project-scoped 
 
 ## Current capability
 
+- Open the **AI Testing Workspace** tab for browser-and-chat functional testing: upload Excel/SRS inputs, review traceable use cases and test cases, approve the plan, hand off login/approvals, and receive incremental assertion-backed results and screenshot evidence. See [workspace setup and boundaries](deploy/TESTING_WORKSPACE.md).
 - Create a governed assessment plan from a GitHub URL, pasted or uploaded FRS requirements (TXT, Markdown, DOCX, PDF), an optional deployed URL, runtime logs, and a selected assessment window.
 - Require an authorization attestation, named owner, approval/ticket reference, exact scope, exclusions, and expiry window before a web target can be registered.
 - Extract candidate requirements with source-line references; redact recognized secrets and PII before candidate text is retained.
@@ -34,12 +35,12 @@ MongoDB is not published to the host and is isolated on an internal database net
 
 ## Docker Hub publishing
 
-The GitHub Actions workflow builds both images on pushes and pull requests, then publishes on pushes to `main`, version tags (`v*.*.*`), or a manually dispatched run. Configure these repository Actions secrets before publishing:
+The GitHub Actions workflow builds backend, frontend and browser-worker images on pushes and pull requests, then publishes on pushes to `main`, version tags (`v*.*.*`), or a manually dispatched run. Configure these repository Actions secrets before publishing:
 
 - `DOCKERHUB_USERNAME`
 - `DOCKERHUB_TOKEN` (a Docker Hub access token with write permission)
 
-Images are published as `DOCKERHUB_USERNAME/governance-ai-studio-backend` and `DOCKERHUB_USERNAME/governance-ai-studio-frontend`. Version tags and commit SHA tags are emitted; `latest` is emitted from `main`. The two Dockerfiles can also be built locally from the repository root.
+Images are published as `DOCKERHUB_USERNAME/governance-ai-studio-backend`, `DOCKERHUB_USERNAME/governance-ai-studio-frontend` and `DOCKERHUB_USERNAME/governance-ai-studio-browser`. Version tags and commit SHA tags are emitted; `latest` is emitted from `main`. All three Dockerfiles can also be built locally from the repository root.
 
 ## Safety and assurance boundary
 

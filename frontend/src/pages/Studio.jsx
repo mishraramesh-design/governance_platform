@@ -138,6 +138,7 @@ export default function Studio() {
   return (
     <div data-testid="governance-studio-page">
       <PageHeader title="Governance AI Studio" subtitle="One governed intake for repository, requirements, web target and runtime evidence. Deterministic checks produce evidence; models can assist analysis, while accountable humans retain gate decisions." />
+      <Link to="/testing-workspace" className="inline-block mb-5 border border-black bg-black text-[#FFE600] px-4 py-3 text-sm font-bold">Open AI Testing Workspace - browser and chat</Link>
 
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.7fr)] gap-6">
         <form onSubmit={(event) => { event.preventDefault(); createRun.mutate(); }} className="border border-gray-200 p-5 space-y-4">

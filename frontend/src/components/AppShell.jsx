@@ -6,7 +6,7 @@ import api from "../lib/api";
 import { AdvisoryBadge } from "./StatusPill";
 
 const NAV = [
-  { group: "Overview", items: [{ to: "/", label: "Dashboard", testId: "nav-dashboard" }, { to: "/studio", label: "Governance AI Studio", testId: "nav-studio" }] },
+  { group: "Overview", items: [{ to: "/", label: "Dashboard", testId: "nav-dashboard" }, { to: "/studio", label: "Governance AI Studio", testId: "nav-studio" }, { to: "/testing-workspace", label: "AI Testing Workspace", testId: "nav-testing-workspace" }] },
   {
     group: "Governance",
     items: [
@@ -136,7 +136,7 @@ export function AppShell({ children }) {
           className="sticky top-0 z-50 bg-white border-b border-gray-300 h-16 flex items-center justify-between px-4 sm:px-8 gap-4"
         >
           <div className="flex items-center gap-4 min-w-0">
-            <AdvisoryBadge />
+            {location.pathname === '/testing-workspace' ? <span className="text-[10px] font-bold border border-blue-400 bg-blue-50 px-2 py-1">USER-APPROVED BROWSER TESTING</span> : <AdvisoryBadge />}
             {currentProject && (
               <span className="hidden md:inline text-xs text-gray-400 truncate">
                 Project: <span className="text-black font-semibold">{currentProject.name}</span> · Tier {currentProject.integrity_tier}

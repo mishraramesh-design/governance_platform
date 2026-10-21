@@ -21,6 +21,8 @@ services:
         condition: service_healthy
       zap:
         condition: service_healthy
+      browser:
+        condition: service_healthy
     environment:
       MONGO_URL: "mongodb://mongo:27017/governance"
       DB_NAME: "governance"
@@ -28,6 +30,8 @@ services:
       EDGE_SIGNING_SECRET: "REPLACE_WITH_A_LONG_RANDOM_SECRET"
       ZAP_API_URL: "http://zap:8080"
       ZAP_API_KEY: "REPLACE_WITH_A_DIFFERENT_LONG_RANDOM_SECRET"
+      BROWSER_WORKER_URL: "http://browser:8010"
+      BROWSER_WORKER_TOKEN: "REPLACE_WITH_BROWSER_WORKER_TOKEN"
       OPENAI_API_KEY: ""
       ANTHROPIC_API_KEY: ""
       GEMINI_API_KEY: ""
@@ -74,5 +78,30 @@ services:
       - backend
     ports:
       - "5021:80"
+
+  browser:
+    image: mishramesh/governance-ai-studio-browser:main
+    pull_policy: always
+    restart: unless-stopped
+    init: true
+    environment:
+      BROWSER_WORKER_TOKEN: "REPLACE_WITH_BROWSER_WORKER_TOKEN"
+    shm_size: 512mb
+    mem_limit: 2g
+    cpus: 2.0
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c 'import os,urllib.request;
+          urllib.request.urlopen(urllib.request.Request(
+          "http://127.0.0.1:8010/health",
+          headers={"X-Browser-Token":os.environ["BROWSER_WORKER_TOKEN"]}),timeout=5)'
+      interval: 15s
+      timeout: 10s
+      start_period: 30s
+      retries: 10
 volumes:
   mongo_data:

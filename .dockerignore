@@ -12,3 +12,6 @@ backend/.env
 .env.*
 memory/test_credentials.md
 test_reports
+.workspace-tools
+.workspace-temp
+.workspace-preview
