@@ -45,12 +45,22 @@ export default function TestingWorkspace() {
   const [form, setForm] = useState({ name: '', url: '', authorization_owner: '', authorization_reference: '',
     authorized: false, allow_cloud: false, allowed_origins: '', requirements: '' });
   const [files, setFiles] = useState([]);
+  const [readiness, setReadiness] = useState(null);
+  const [probe, setProbe] = useState(null);
+  const [probing, setProbing] = useState(false);
   const feed = useRef(null);
   const previousPlan = useRef('');
   const browserEnabled = Boolean(session && !['closed', 'interrupted'].includes(session.status));
 
   const refreshList = useCallback(() => api.get(base).then((response) => setSessions(response.data)).catch(() => {}), []);
   useEffect(() => { refreshList(); }, [refreshList]);
+  useEffect(() => {
+    let active = true;
+    api.get('/testing-workspace/readiness', { params: { project_id: projectId || undefined, allow_cloud: form.allow_cloud } })
+      .then(({ data }) => { if (active) setReadiness(data); })
+      .catch(() => { if (active) setReadiness(null); });
+    return () => { active = false; };
+  }, [projectId, form.allow_cloud, createOpen]);
   useEffect(() => {
     if (!sessionId) return undefined;
     sessionStorage.setItem('testing_workspace_session', sessionId);
@@ -61,6 +71,8 @@ export default function TestingWorkspace() {
         const response = await api.get(`${base}/${sessionId}`);
         if (!active) return;
         setSession(response.data); setStatusError('');
+        setSessions((items) => items.map((item) => item.id === response.data.id
+          ? { ...item, status: response.data.status, name: response.data.name } : item));
         const digest = response.data.plan_hash || '';
         if (previousPlan.current !== `${sessionId}:${digest}`) {
           previousPlan.current = `${sessionId}:${digest}`;
@@ -68,6 +80,7 @@ export default function TestingWorkspace() {
         }
       } catch (error) {
         if (active) setStatusError(error?.response?.data?.detail || 'Live session status is unavailable.');
+        if ([401, 403, 404].includes(error?.response?.status)) return;
       }
       if (active) timer = setTimeout(poll, 2000);
     };
@@ -165,6 +178,20 @@ export default function TestingWorkspace() {
     {createOpen && <form onSubmit={create} className="border bg-gray-50 p-4 space-y-3" data-testid="workspace-intake">
       <h2 className="font-bold">Start an authorized browser assessment</h2>
       <p className="text-xs text-gray-600">Model settings: {currentProject?.name || 'Studio defaults'} (maker profile)</p>
+      {readiness && <div role="status" className={`border p-3 text-xs ${readiness.ready ? 'bg-green-50' : 'bg-amber-50'}`}>
+        <strong>{readiness.ready ? 'Agent model ready' : 'Agent model needs configuration'}</strong>: {readiness.reason}
+        <p>{readiness.provider} / {readiness.model} · Tier {readiness.tier} · {readiness.limit} calls per session.</p>
+        {readiness.budget_warning && <p>{readiness.budget_warning}</p>}
+        <Link to="/model-settings" className="underline">Configure maker model</Link>
+        <button type="button" className={`${button} ml-2`} disabled={probing || !readiness.ready} onClick={async () => {
+          setProbing(true); setProbe(null);
+          try { const { data } = await api.post('/testing-workspace/model-probe', { project_id: projectId || '', allow_cloud: form.allow_cloud }); setProbe(data); }
+          catch { setProbe({ reason: 'Connection check failed. Review provider configuration.' }); }
+          finally { setProbing(false); }
+        }}>{probing ? 'Checking model...' : 'Check model connection (one synthetic call)'}</button>
+        {probe && <p role="status">{probe.ready ? 'Connection verified: ' : 'Connection not ready: '}{probe.reason}</p>}
+        {!readiness.ready && <p>Browser takeover and approved direct page checks remain available without a model.</p>}
+      </div>}
       <div className="grid md:grid-cols-2 gap-3">{[['name', 'Assessment name'], ['url', 'Application URL'], ['authorization_owner', 'Authorizing owner'], ['authorization_reference', 'Approval or ticket reference']].map(([key, label]) => <label key={key} className="text-xs font-semibold">{label}<input required maxLength={key === 'url' ? 2048 : 300} type={key === 'url' ? 'url' : 'text'} value={form[key]} onChange={field(key)} className="block border bg-white p-2 w-full mt-1" /></label>)}</div>
       <label className="block text-xs font-semibold">Excel test cases and/or SRS (up to four files; 2 MB each)<input type="file" multiple accept=".xlsx,.txt,.md,.csv,.docx,.pdf" className="block mt-1" onChange={(event) => setFiles(Array.from(event.target.files || []))} /></label>
       <a href="/workspace-test-cases.xlsx" download className="text-xs underline text-blue-700">Download Excel test-case template (replace example expectations)</a>
@@ -179,6 +206,7 @@ export default function TestingWorkspace() {
     {session && <div className="grid xl:grid-cols-[minmax(340px,0.85fr)_minmax(500px,1.3fr)] gap-4 items-start">
       <section className="border flex flex-col bg-white" aria-label="AI chat and test outcomes">
         <div className="p-3 border-b bg-gray-50 flex justify-between items-center"><div><h2 className="font-bold text-sm">Agent conversation &amp; results</h2><p className="text-[10px] text-gray-500">Studio maker model - approvals stay with you</p></div><Link to="/model-settings" className="text-xs underline">Model settings</Link></div>
+        {session.model_readiness && <div className="p-3 border-b text-xs" role="status"><strong>{session.model_readiness.ready ? 'Agent ready: ' : 'Agent blocked: '}</strong>{session.model_readiness.reason}<p>{session.model_readiness.budget_warning}</p></div>}
         <div className="p-3 flex flex-wrap gap-2 border-b">
           <button type="button" className={button} onClick={() => setPlanOpen(!planOpen)}>Review plan ({session.plan?.cases?.length || 0})</button>
           <button type="button" className={primary} disabled={busy || !session.approved_plan_hash || !['paused', 'handoff'].includes(session.status)} onClick={() => act('run')}>Run / Resume tests</button>

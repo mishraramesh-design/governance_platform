@@ -136,14 +136,19 @@ async def generate_plan(record):
             'page': {key: observation.get(key) for key in ('url', 'text', 'controls')},
             'owner_instructions': record.get('instructions', [])[-10:]})
         if response.get('mode') == 'llm' and response.get('text'):
-            plan = validate_plan(json_object(response['text']), record['sources'])
+            try:
+                plan = validate_plan(json_object(response['text']), record['sources'])
+            except (ValueError, TypeError):
+                plan = deterministic_plan(record['sources'])
+                response = {**response, 'mode': 'invalid-model-plan',
+                            'reason': 'Maker returned an invalid plan or unsupported source links. Review deterministic drafts; no model plan was approved.'}
         else:
             plan = deterministic_plan(record['sources'])
         await db.testing_sessions.update_one({'id': sid, 'status': {'$in': ['planning', 'paused']}}, {'$set': {
             'plan': plan, 'plan_hash': plan_hash(plan), 'approved_plan_hash': None,
-            'model': {key: response.get(key) for key in ('model_used', 'mode')}, 'status': 'plan_review'}})
+            'model': {key: response.get(key) for key in ('model_used', 'mode', 'reason')}, 'status': 'plan_review'}})
         await event(sid, 'plan', 'Plan ready for review. Edit missing assertions and approve before execution. '
-                    + ('Studio model unavailable or budget exhausted; deterministic drafts need review.' if response.get('mode') != 'llm' else ''))
+                    + ((response.get('reason') or 'Studio model unavailable; deterministic drafts need review.') if response.get('mode') != 'llm' else ''))
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -219,6 +224,37 @@ async def create_session(url: str = Form(...), name: str = Form('Browser assessm
     return {'id': sid}
 
 
+@router.get('/readiness')
+async def readiness(project_id: str = None, allow_cloud: bool = False, user=Depends(auth.get_current_user)):
+    await auth.require_any_global_role(user, auth.GOVERNANCE_ROLES)
+    if project_id:
+        await auth.require_project_access(user, project_id)
+    return await gateway.workspace_readiness(db, project_id=project_id, allow_cloud=allow_cloud)
+
+
+class ModelProbe(Contract):
+    project_id: str = ''
+    allow_cloud: bool = False
+
+
+@router.post('/model-probe')
+async def model_probe(request: ModelProbe, user=Depends(auth.get_current_user)):
+    """One explicit synthetic provider call; no application or document data."""
+    await auth.require_any_global_role(user, auth.GOVERNANCE_ROLES)
+    if request.project_id:
+        await auth.require_project_access(user, request.project_id)
+    result = await gateway.complete_workspace('Return only JSON: {"ready":true}.', 'Synthetic Studio connection check.',
+        db=db, run_id='probe-' + uuid4().hex, project_id=request.project_id or None, allow_cloud=request.allow_cloud)
+    valid = False
+    if result.get('mode') == 'llm':
+        try:
+            valid = json_object(result.get('text', '')).get('ready') is True
+        except ValueError:
+            pass
+    return {'ready': valid, 'mode': result.get('mode'), 'model_used': result.get('model_used'),
+            'reason': 'Provider returned valid structured output.' if valid else result.get('reason') or 'Provider did not return the expected JSON. Check model compatibility.'}
+
+
 @router.get('/sessions')
 async def list_sessions(user=Depends(auth.get_current_user)):
     await auth.require_any_global_role(user, auth.GOVERNANCE_ROLES)
@@ -233,6 +269,8 @@ async def get_session(sid: str, user=Depends(auth.get_current_user)):
     budget = await db.llm_run_budgets.find_one({'_id': 'workspace-' + sid})
     record['model_budget'] = {'calls_reserved': (budget or {}).get('calls_reserved', 0),
                               'limit': cfg['max_llm_calls_per_run']}
+    record['model_readiness'] = await gateway.workspace_readiness(db, project_id=record.get('project_id'),
+        allow_cloud=record.get('allow_cloud', False), run_id='workspace-' + sid)
     record.pop('browser_id', None)
     return record
 
@@ -370,7 +408,7 @@ async def run_cases(record):
                     return
                 if response.get('mode') not in ('llm', 'deterministic') or not response.get('text'):
                     await db.testing_sessions.update_one({'id': sid}, {'$set': {'status': 'handoff'}})
-                    await event(sid, 'handoff', 'Studio model unavailable or per-session call budget exhausted. Configure the maker model/call ceiling, then resume. No result was fabricated.')
+                    await event(sid, 'handoff', response.get('reason') or 'Studio model unavailable or per-session call budget exhausted. Configure the maker model/call ceiling, then resume. No result was fabricated.')
                     return
                 action = BrowserAction.model_validate(json_object(response['text']))
                 if action.op in ('handoff', 'blocked'):
@@ -408,8 +446,10 @@ async def run_cases(record):
                     break
             else:
                 await save_result(record, case, 'BLOCKED', 'Action limit reached without an approved assertion result.')
-        await db.testing_sessions.update_one({'id': sid}, {'$set': {'status': 'completed'}})
-        await event(sid, 'complete', 'Approved plan finished. Review PASS, FAIL and BLOCKED results and coverage gaps.')
+        finished = await db.testing_sessions.update_one({'id': sid, 'status': {'$in': ['running', 'awaiting_request']}},
+            {'$set': {'status': 'completed', 'current_case_id': None}})
+        if finished.matched_count:
+            await event(sid, 'complete', 'Approved plan finished. Review PASS, FAIL and BLOCKED results and coverage gaps.')
     except asyncio.CancelledError:
         raise
     except Exception as exc:

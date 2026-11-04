@@ -278,6 +278,7 @@ async def _run_framework_assessment(run_id, record, request, user_id):
                 timeout_seconds=min(75, int(remaining)),
             )
             output.update({"status": output.get("status", "tool_error"),
+                           "http_opt_in": bool(request.allow_http and request.framework in ('playwright', 'k6')),
                            "started_by_user_id": user_id,
                            "completed_at": datetime.now(timezone.utc).isoformat(),
                            "authorization_reference": record["source"].get("authorization_reference"),
@@ -350,12 +351,15 @@ async def start_framework_assessment(run_id: str, request: StudioFrameworkAssess
     if datetime.now(timezone.utc) >= expires_at:
         raise HTTPException(403, "The authorized assessment window has expired.")
     try:
-        target_parts = await validate_public_target(target)
+        # HTTP is explicit per assessment, never an implicit downgrade. Only
+        # unauthenticated browser/GET smoke supports it; API contract tests do not.
+        http_allowed = request.allow_http and request.framework in ('playwright', 'k6')
+        target_parts = await validate_public_target(target, allow_http=http_allowed)
         if request.framework == "schemathesis":
             if not request.openapi_url:
                 raise ValueError("Schemathesis requires a public OpenAPI URL.")
             schema_parts = await validate_public_target(request.openapi_url)
-            if schema_parts.hostname != target_parts.hostname or schema_parts.port != target_parts.port:
+            if schema_parts.scheme != target_parts.scheme or schema_parts.hostname != target_parts.hostname or schema_parts.port != target_parts.port:
                 raise ValueError("The OpenAPI schema must be hosted on the same authorized target host.")
             root = target_parts.path.rstrip("/") or "/"
             if root != "/" and not (schema_parts.path == root or schema_parts.path.startswith(root + "/")):
@@ -379,10 +383,10 @@ async def start_framework_assessment(run_id: str, request: StudioFrameworkAssess
                 pass
         queued = {"status": "queued", "framework": request.framework,
                   "queued_at": datetime.now(timezone.utc).isoformat(), "started_by_user_id": user["id"],
-                  "staging_authorized": True}
+                  "staging_authorized": True, "allow_http": http_allowed}
         queue_ledger = await ledger_mod.append_to_ledger(db, "governance_studio_framework_assessment_queued", run_id, {
             "framework": request.framework, "authorization_reference": source["authorization_reference"],
-            "parameters": {"max_examples": request.max_examples if request.framework == "schemathesis" else None,
+            "parameters": {"allow_http": http_allowed, "max_examples": request.max_examples if request.framework == "schemathesis" else None,
                            "virtual_users": request.virtual_users if request.framework == "k6" else None,
                            "duration_seconds": request.duration_seconds if request.framework == "k6" else None,
                            "max_p95_ms": request.max_p95_ms if request.framework == "k6" else None,
@@ -586,9 +590,6 @@ async def run_studio_repository_audit(run_id: str, user=Depends(auth.get_current
         "tool_assessments": result.get("tool_assessments", []),
         "execution": "read-only repository source scan; target runtime was not tested",
     }
-    for step in record["plan"]:
-        if step["id"] == "SEC-01":
-            step["state"] = "completed_source_scan"
     ledger_entry = await ledger_mod.append_to_ledger(db, "governance_studio_repository_audit", run_id, {
         "project_id": audit["project_id"], "finding_count": (audit.get("finding_summary") or {}).get("total", 0),
         "source": github_url,
@@ -597,7 +598,9 @@ async def run_studio_repository_audit(run_id: str, user=Depends(auth.get_current
                              for item in audit["tool_assessments"]],
     })
     audit["ledger"] = {"seq": ledger_entry["seq"], "hash": ledger_entry["hash"], "entry_id": ledger_entry["id"]}
-    await db.studio_runs.update_one({"id": run_id}, {"$set": {"repository_audit": audit, "plan": record["plan"], "status": "partially_assessed"}})
-    record["repository_audit"] = audit
-    record["status"] = "partially_assessed"
-    return record
+    # The audit can take minutes while a web assessment updates the same run.
+    # Never overwrite the plan or return the pre-audit snapshot.
+    await db.studio_runs.update_one({"id": run_id}, {"$set": {
+        "repository_audit": audit, "plan.$[step].state": "completed_source_scan",
+        "status": "partially_assessed"}}, array_filters=[{"step.id": "SEC-01"}])
+    return await db.studio_runs.find_one({"id": run_id}, {"_id": 0})

@@ -14,6 +14,7 @@ import os
 import time
 import hashlib
 import logging
+import ssl
 from uuid import uuid4
 from datetime import datetime, timezone
 from pymongo import ReturnDocument
@@ -51,7 +52,7 @@ def _prof(provider, model):
 
 DEFAULT_CONFIG = {
     "capability_profiles": {
-        "maker": _prof("openai", "gpt-5.6-terra"),
+        "maker": _prof("openai", "gpt-4.1"),
         "checker": _prof("anthropic", "claude-sonnet-5-5"),
         "security": _prof("gemini", "gemini-3.1-pro-preview"),
         "verifier": _prof("openai", "gpt-5.4"),
@@ -161,6 +162,8 @@ def _runnable(profile: dict):
     """Return (ok, mode_if_not_ok, key, reason). Decides whether a real call can run."""
     if profile is None:
         return False, "zero-llm", None, "profile 'none'"
+    if not str(profile.get('model') or '').strip():
+        return False, 'zero-llm', None, 'model name is missing'
     provider = profile.get("provider")
     if profile.get("local_only") and provider in CLOUD_PROVIDERS:
         return False, "local-only-blocked", None, "local-only forbids external cloud calls"
@@ -179,7 +182,9 @@ async def _run_llm(system_message: str, masked_input: str, profile: dict, key: s
     provider = profile["provider"]
     model = profile["model"]
     timeout = httpx.Timeout(60.0, connect=10.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    # Use the OS trust store (including managed Windows roots), while retaining
+    # certificate and hostname verification. Never bypass TLS for a provider.
+    async with httpx.AsyncClient(timeout=timeout, verify=ssl.create_default_context()) as client:
         if provider in ("openai", "custom"):
             base_url = profile.get("base_url", "") if provider == "custom" else "https://api.openai.com/v1"
             endpoint = base_url.rstrip("/")
@@ -188,7 +193,7 @@ async def _run_llm(system_message: str, masked_input: str, profile: dict, key: s
             response = await client.post(
                 endpoint,
                 headers={"Authorization": f"Bearer {key}"},
-                json={"model": model, "temperature": 0,
+                json={"model": model,
                       "messages": [{"role": "system", "content": system_message},
                                    {"role": "user", "content": masked_input or ""}]},
             )
@@ -246,19 +251,27 @@ async def _dispatch(system, masked_input, profile, task, base_record, db, zero_t
         return {"text": zero_text, "model_used": rec["model_used"], "mode": mode, "latency_ms": 0}
     t0 = time.time()
     try:
-        text = await _run_llm(system, masked_input, profile, key, task) or zero_text
+        text = await _run_llm(system, masked_input, profile, key, task)
+        if not text:
+            raise ValueError('empty_provider_response')
         latency = round((time.time() - t0) * 1000)
         rec = {**base_record, "provider": profile["provider"], "model_used": profile["model"],
                "mode": "llm", "output_hash": _hash(text), "latency_ms": latency}
         await _log_call(db, rec)
         return {"text": text, "model_used": profile["model"], "mode": "llm", "latency_ms": latency}
     except Exception as e:
-        logger.error(f"gateway error task={task}: {e}")
+        logger.error("gateway error task=%s type=%s", task, type(e).__name__)
+        status = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else None
+        explanation = {401: 'Provider rejected the API key.', 403: 'Provider denied access to this model or project.',
+                       404: 'Provider model or endpoint was not found.', 429: 'Provider quota or rate limit reached.'}.get(
+                           status, 'Provider request failed. Check credentials, model availability, quota and endpoint connectivity.')
         latency = round((time.time() - t0) * 1000)
         rec = {**base_record, "provider": "none", "model_used": "zero-llm-fallback",
-               "mode": "zero-llm-error-fallback", "error": str(e), "output_hash": _hash(zero_text), "latency_ms": latency}
+               "mode": "zero-llm-error-fallback", "error": type(e).__name__, "http_status": status,
+               "output_hash": _hash(zero_text), "latency_ms": latency}
         await _log_call(db, rec)
-        return {"text": zero_text, "model_used": "zero-llm-fallback", "mode": "zero-llm-error-fallback", "latency_ms": latency}
+        return {"text": zero_text, "model_used": "zero-llm-fallback", "mode": "zero-llm-error-fallback", "latency_ms": latency,
+                "reason": explanation + ' Review Model Gateway Settings.'}
 
 
 async def complete(task: str, masked_input: str, capability_profile: str, db=None,
@@ -319,6 +332,8 @@ async def complete_agent(agent_id: str, task: str, masked_input: str, level: int
         return {"text": zero, "model_used": "zero-llm-deterministic", "mode": "zero-llm", "latency_ms": 0, "capability_profile": role}
 
     system = agent["system_prompt"]
+    if task in SYSTEM_PROMPTS:
+        system += '\n\nCurrent task: ' + SYSTEM_PROMPTS[task]
     if int(level) == 2:
         system += ("\n\nYou are acting as the INDEPENDENT LEVEL-2 reviewer using a different model family than "
                    "Level-1. Re-perform the check, then reply AGREE or DISAGREE with the Level-1 conclusion and a "
@@ -329,6 +344,32 @@ async def complete_agent(agent_id: str, task: str, masked_input: str, level: int
     return res
 
 
+async def workspace_readiness(db, *, project_id=None, allow_cloud=False, run_id=None):
+    """Configuration diagnostics only; never return keys or make a provider call."""
+    cfg = await get_config(db, project_id)
+    profile = cfg['capability_profiles'].get('maker')
+    project = await db.projects.find_one({'id': project_id}, {'_id': 0, 'tier': 1}) if project_id else None
+    tier = (project or {}).get('tier') or ('T2' if allow_cloud else 'T1')
+    budget = await db.llm_run_budgets.find_one({'_id': run_id}) if run_id else None
+    used = (budget or {}).get('calls_reserved', 0)
+    limit = cfg['max_llm_calls_per_run']
+    ok, mode, _, reason = _runnable(profile)
+    if cfg['zero_llm_mode'] or FORCE_ZERO_LLM:
+        ok, mode, reason = False, 'zero-llm', 'Zero-LLM mode is enabled. Disable it to use the maker model.'
+    elif profile and profile.get('provider') in CLOUD_PROVIDERS and not allow_cloud:
+        ok, mode, reason = False, 'cloud-consent-required', 'Cloud transmission consent is required for this workspace. A local maker model can run without cloud consent.'
+    elif profile and profile.get('provider') in CLOUD_PROVIDERS and cfg['sovereignty'].get(tier):
+        ok, mode, reason = False, 'sovereignty-blocked', f'Project tier {tier} requires local processing. Configure a local maker model or have the owner review project policy.'
+    elif limit <= used:
+        ok, mode, reason = False, 'budget-exhausted', f'Session model-call budget exhausted ({used}/{limit}). Review the configured call ceiling.'
+    elif not ok:
+        reason = 'Configure the maker provider, model and API key (or local endpoint) in Model Gateway Settings. ' + str(reason)
+    return {'ready': ok, 'mode': 'ready' if ok else mode, 'reason': reason or 'Maker model configuration is ready; provider availability is checked on use.',
+            'provider': (profile or {}).get('provider'), 'model': (profile or {}).get('model'),
+            'tier': tier, 'calls_reserved': used, 'limit': limit,
+            'budget_warning': 'Budget is small for multi-step testing; planning and every agent action share this ceiling.' if limit < 10 else None}
+
+
 async def complete_workspace(system: str, masked_input: str, *, db, run_id, allow_cloud=False, project_id=None):
     """Use Studio's maker profile and cost budget; browser execution stays outside the model.
 
@@ -337,11 +378,10 @@ async def complete_workspace(system: str, masked_input: str, *, db, run_id, allo
     """
     cfg = await get_config(db, project_id)
     profile = cfg['capability_profiles'].get('maker')
-    if cfg['zero_llm_mode']:
-        return {'mode': 'zero-llm', 'text': '', 'model_used': 'none'}
-    tier = 'T2' if allow_cloud else 'T1'
-    if profile and profile.get('provider') in CLOUD_PROVIDERS and (not allow_cloud or cfg['sovereignty'].get(tier)):
-        return {'mode': 'sovereignty-blocked', 'text': '', 'model_used': 'none'}
+    readiness = await workspace_readiness(db, project_id=project_id, allow_cloud=allow_cloud, run_id=run_id)
+    if not readiness['ready']:
+        return {'mode': readiness['mode'], 'text': '', 'model_used': 'none', 'reason': readiness['reason']}
+    tier = readiness['tier']
     record = {'id': str(uuid4()), 'task': 'interactive_workspace', 'run_id': run_id,
               'project_id': project_id,
               'capability_profile': 'maker', 'tier': tier, 'masked_input_hash': _hash(masked_input),

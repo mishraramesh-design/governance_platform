@@ -15,6 +15,16 @@ from audit_history import historical_record
 router = APIRouter()
 
 
+def report_narrative(report):
+    """Render old placeholder reports usefully without changing ledgered originals."""
+    narrative = report.get('narrative', '')
+    if narrative.startswith('Zero-LLM mode:') and 'would assess' in narrative:
+        return (f"Deterministic evidence report: {report.get('finding_count', 0)} findings recorded. "
+                "Review the evidence, severity breakdown and remedies in the stored sections. "
+                "No model-generated narrative was available. The original report remains preserved.")
+    return narrative
+
+
 def render_html(title: str, subtitle: str, sections, ledger_hash: str = None, timestamp: str = None):
     title, subtitle = escape(str(title)), escape(str(subtitle))
     body = f"<h1 style='font-family:Chivo,sans-serif;color:#111'>{title}</h1>"
@@ -38,7 +48,8 @@ async def list_reports(project_id: str = Query(...), type: str = None):
     q = {"project_id": project_id}
     if type:
         q["type"] = type
-    return await db.reports.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    rows = await db.reports.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return [{**row, 'display_narrative': report_narrative(row)} for row in rows]
 
 
 @router.get("/reports/{report_id}")
@@ -54,7 +65,7 @@ async def download_report(report_id: str):
     r = await historical_record(db, 'reports', report_id)
     if not r:
         raise HTTPException(404, "report not found")
-    sections = [{"heading": "Narrative Summary", "body": [r["narrative"]]}] + r["sections"]
+    sections = [{"heading": "Narrative Summary", "body": [report_narrative(r)]}] + r["sections"]
     html = render_html(r["title"], f"Type: {r['type']} &middot; Findings covered: {r['finding_count']}", sections, r.get("ledger_hash"), r["created_at"])
     return HTMLResponse(content=html, headers={"Content-Disposition": f"attachment; filename=report_{report_id}.html"})
 

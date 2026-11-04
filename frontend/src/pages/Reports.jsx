@@ -26,7 +26,7 @@ export default function Reports() {
                   <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 ${r.type === "author" ? "bg-gray-100 text-gray-700" : "bg-black text-[#FFE600]"}`}>{r.type.replace("_", " ")}</span>
                   <span className="font-[Chivo] font-bold text-sm">{r.title}</span>
                 </div>
-                <p className="text-sm text-gray-600 mb-1">{r.narrative}</p>
+                <p className="text-sm text-gray-600 mb-1">{r.display_narrative || r.narrative}</p>
                 <div className="font-mono text-[10px] text-gray-400 truncate">Ledger hash: {r.ledger_hash}</div>
               </div>
               <AuthenticatedDownload

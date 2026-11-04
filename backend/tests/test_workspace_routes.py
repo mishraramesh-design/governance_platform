@@ -28,7 +28,7 @@ class WorkspaceRouteTests(unittest.TestCase):
                        'plan': {'cases': [self.case]}, 'approved_plan_hash': 'hash', 'origins': ['https://example.test:443'],
                        'sources': [{'id': 'R1', 'text': 'Dashboard shall be visible'}], 'results': [], 'action_history': []}
         self.collection = SimpleNamespace(find_one=AsyncMock(side_effect=lambda *args, **kw: dict(self.record)),
-            update_one=AsyncMock(return_value=SimpleNamespace(modified_count=1)))
+            update_one=AsyncMock(return_value=SimpleNamespace(modified_count=1, matched_count=1)))
         self.fake_db = SimpleNamespace(testing_sessions=self.collection)
         self.view = {'url': 'https://example.test/', 'text': 'Dashboard', 'controls': [{'node': 'n1', 'label': 'Create', 'type': 'button'}],
                      'observation_id': 'obs1', 'pending_requests': [], 'busy': False, 'last_action': {'ok': True, 'assertion': True, 'op': 'assert_text'}}
@@ -118,9 +118,12 @@ class WorkspaceRouteTests(unittest.TestCase):
         cfg = {'zero_llm_mode': False, 'max_llm_calls_per_run': 12, 'sovereignty': {},
                'capability_profiles': {'maker': {'provider': 'openai', 'model': 'configured-model'}}}
         dispatch = AsyncMock(return_value={'mode': 'llm', 'text': '{}'})
-        with patch.object(ws.gateway, 'get_config', AsyncMock(return_value=cfg)), patch.object(ws.gateway, '_dispatch', dispatch):
+        self.fake_db.projects = SimpleNamespace(find_one=AsyncMock(return_value={'tier': 'T2'}))
+        self.fake_db.llm_run_budgets = SimpleNamespace(find_one=AsyncMock(return_value=None))
+        with patch.object(ws.gateway, 'get_config', AsyncMock(return_value=cfg)), patch.object(ws.gateway, '_dispatch', dispatch), \
+             patch.dict(ws.gateway.PROVIDER_API_KEYS, {'openai': 'synthetic-test-key'}):
             result = finish(ws.gateway.complete_workspace('system', '{}', db=self.fake_db, run_id='workspace-session1'))
-            self.assertEqual(result['mode'], 'sovereignty-blocked')
+            self.assertEqual(result['mode'], 'cloud-consent-required')
             dispatch.assert_not_awaited()
             finish(ws.gateway.complete_workspace('system', '{}', db=self.fake_db, run_id='workspace-session1', allow_cloud=True, project_id='project-fixture'))
             self.assertEqual(ws.gateway.get_config.await_args.args, (self.fake_db, 'project-fixture'))

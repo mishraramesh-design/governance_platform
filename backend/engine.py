@@ -532,6 +532,18 @@ async def compute_traceability(db, project_id):
     return {"rows": rows, "gaps": gaps, "coverage_pct": coverage_pct, "total_requirements": len(rows)}
 
 
+def deterministic_report_summary(findings):
+    """A useful factual report even when no model is configured or permitted."""
+    failures = sum(item.get('verdict') == 'FAIL' for item in findings)
+    high = sum(item.get('severity', '').lower() in ('high', 'critical') for item in findings)
+    unassessed = sum(item.get('verdict') == 'NOT ASSESSED' for item in findings)
+    return (f"Deterministic evidence summary: {len(findings)} findings recorded; "
+            f"{failures} FAIL, {high} high/critical, {unassessed} NOT ASSESSED. "
+            "Review the cited evidence and suggested remedies in the sections below. "
+            "Counts describe recorded findings, not independently confirmed exploits or a maturity rating. "
+            "No model-generated narrative was used.")
+
+
 async def generate_author_report(db, project, event, findings):
     by_author = {}
     for f in findings:
@@ -544,7 +556,7 @@ async def generate_author_report(db, project, event, findings):
 
     masked_summary = "; ".join(f"{f['control_name']}: {f['verdict']} ({f['severity']})" for f in findings[:20]) or "No findings for this event."
     gw = await gateway.complete_agent("A22", "author_report_narrative", masked_summary, level=1, db=db,
-                                      run_id=event["id"], project_id=project["id"])
+                                      run_id=event["id"], project_id=project["id"], tier=project.get('tier'))
 
     sections = []
     for author, items in by_author.items():
@@ -554,7 +566,8 @@ async def generate_author_report(db, project, event, findings):
     report = {
         "id": str(uuid4()), "project_id": project["id"], "event_id": event["id"], "type": "author",
         "title": f"Author Report - {project['name']} - {event['event_type']}",
-        "narrative": gw["text"], "sections": sections, "finding_count": len(findings),
+        "narrative": gw["text"] if gw.get("mode") == "llm" else deterministic_report_summary(findings),
+        "narrative_mode": gw.get("mode"), "sections": sections, "finding_count": len(findings),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     entry = await ledger_mod.append_to_ledger(db, "report", report["id"], {"type": "author", "event_id": event["id"]})
@@ -574,7 +587,7 @@ async def generate_team_lead_report(db, project, event, findings):
 
     masked_summary = f"Severity breakdown: {severity_counts}. Verdict breakdown: {verdict_counts}. Top hotspots: {hotspots}."
     gw = await gateway.complete_agent("A22", "team_lead_report_narrative", masked_summary, level=1, db=db,
-                                      run_id=event["id"], project_id=project["id"])
+                                      run_id=event["id"], project_id=project["id"], tier=project.get('tier'))
 
     sections = [
         {"heading": "Severity Breakdown", "body": [f"{k}: {v}" for k, v in severity_counts.items()] or ["No findings"]},
@@ -584,7 +597,8 @@ async def generate_team_lead_report(db, project, event, findings):
     report = {
         "id": str(uuid4()), "project_id": project["id"], "event_id": event["id"], "type": "team_lead",
         "title": f"Team Lead Report - {project['name']} - {event['event_type']}",
-        "narrative": gw["text"], "sections": sections, "finding_count": len(findings),
+        "narrative": gw["text"] if gw.get("mode") == "llm" else deterministic_report_summary(findings),
+        "narrative_mode": gw.get("mode"), "sections": sections, "finding_count": len(findings),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     entry = await ledger_mod.append_to_ledger(db, "report", report["id"], {"type": "team_lead", "event_id": event["id"]})

@@ -154,6 +154,7 @@ class StudioFrameworkAssessmentRequest(BaseModel):
     """Explicitly bounded browser, API-contract or load smoke assessment."""
     framework: str
     staging_authorized: bool = False
+    allow_http: bool = False
     openapi_url: Optional[str] = None
     max_examples: int = Field(default=10, ge=1, le=25)
     virtual_users: int = Field(default=2, ge=1, le=3)

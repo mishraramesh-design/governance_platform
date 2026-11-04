@@ -29,6 +29,7 @@ export default function Studio() {
   const [excludedPaths, setExcludedPaths] = useState("");
   const [framework, setFramework] = useState("playwright");
   const [frameworkAuthorized, setFrameworkAuthorized] = useState(false);
+  const [allowHttp, setAllowHttp] = useState(false);
   const [openapiUrl, setOpenapiUrl] = useState("");
   const [maxExamples, setMaxExamples] = useState(10);
   const [k6Vus, setK6Vus] = useState(2);
@@ -109,7 +110,7 @@ export default function Studio() {
 
   const runFrameworkAssessment = useMutation({
     mutationFn: () => api.post(`/studio/runs/${result.id}/framework-assessment`, {
-      framework, staging_authorized: frameworkAuthorized,
+      framework, staging_authorized: frameworkAuthorized, allow_http: allowHttp,
       ...(framework === "schemathesis" ? { openapi_url: openapiUrl, max_examples: Number(maxExamples) } : {}),
       ...(framework === "k6" ? { virtual_users: Number(k6Vus), duration_seconds: Number(k6Duration), max_p95_ms: Number(k6P95), max_error_rate_percent: Number(k6ErrorRate) } : {}),
     }),
@@ -301,12 +302,13 @@ export default function Studio() {
         </section>}
         {result.source?.target_url && <section className="mx-4 mb-4 border border-purple-300 bg-purple-50 p-4" data-testid="studio-framework-assessment">
           <h3 className="text-xs font-bold uppercase tracking-wider">Functional, API and performance frameworks</h3>
-          <p className="text-[11px] text-gray-700 mt-1">Runs a single bounded framework against the exact authorized HTTPS target. Schemathesis generates API cases with Hypothesis. k6 is GET-only, paced, capped at 3 virtual users and 30 seconds. No response bodies or raw tool output are retained.</p>
+          <p className="text-[11px] text-gray-700 mt-1">Runs a bounded assessment against the exact authorized target. HTTPS is the default; HTTP browser/GET smoke requires explicit opt-in below. API contract testing requires HTTPS. k6 is GET-only, paced, capped at 3 virtual users and 30 seconds.</p>
           <label className="mt-3 block text-xs font-bold">Framework
             <select value={framework} onChange={(event) => { setFramework(event.target.value); setFrameworkAuthorized(false); }} className="mt-1 block w-full border border-gray-300 bg-white px-3 py-2 text-xs">
               <option value="playwright">Playwright browser smoke</option><option value="schemathesis">Schemathesis API contract + Hypothesis cases</option><option value="k6">k6 bounded load smoke (GET only)</option>
             </select>
           </label>
+          {framework !== 'schemathesis' && result.source.target_url.startsWith('http:') && <label className="mt-2 flex gap-2 text-xs"><input type="checkbox" checked={allowHttp} onChange={(event) => setAllowHttp(event.target.checked)} />Allow this unauthenticated HTTP test target. No credentials are sent; HTTPS remains recommended.</label>}
           {framework === "schemathesis" && <div className="mt-2 grid md:grid-cols-2 gap-2">
             <label className="block text-xs font-bold">OpenAPI schema URL<input type="url" required value={openapiUrl} onChange={(event) => setOpenapiUrl(event.target.value)} className="mt-1 w-full border border-gray-300 bg-white px-3 py-2 text-xs font-normal" placeholder="https://staging.example.com/openapi.json" /></label>
             <label className="block text-xs font-bold">Maximum generated examples<input type="number" min="1" max="25" value={maxExamples} onChange={(event) => setMaxExamples(event.target.value)} className="mt-1 block w-full border border-gray-300 bg-white px-3 py-2 text-xs font-normal" /></label>

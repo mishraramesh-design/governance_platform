@@ -1,6 +1,7 @@
 import json
 import re
 import tempfile
+import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -69,7 +70,7 @@ class GovernanceToolAdapterTests(unittest.TestCase):
         target = "https://staging.example.test/app"
         schema = "https://staging.example.test/app/openapi.json"
         playwright = _assessment_argv("playwright", target)
-        self.assertEqual(playwright[0:2], ["python", "-c"])
+        self.assertEqual(playwright[0:2], [sys.executable, "-c"])
         self.assertEqual(playwright[-1], target)
         schemathesis = _assessment_argv("schemathesis", target, openapi_url=schema, max_examples=12)
         self.assertIn("--max-examples", schemathesis)

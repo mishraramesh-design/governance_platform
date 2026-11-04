@@ -11,6 +11,7 @@ import os
 import tempfile
 import shutil
 import subprocess
+import sys
 import time
 import re
 from pathlib import Path
@@ -274,7 +275,7 @@ def _assessment_argv(framework, target_url, *, openapi_url=None, max_examples=10
                 "--duration", f"{duration_seconds}s", "--summary-export",
                 str(Path(workdir) / "k6-summary.json"), str(Path(workdir) / "k6-smoke.js")]
     if framework == "playwright":
-        return ["python", "-c", _PLAYWRIGHT_SMOKE, target_url]
+        return [sys.executable, "-c", _PLAYWRIGHT_SMOKE, target_url]
     raise ValueError("unsupported framework")
 
 
@@ -282,7 +283,7 @@ _PLAYWRIGHT_SMOKE = r'''import asyncio, json, sys
 from urllib.parse import urlsplit
 from playwright.async_api import async_playwright
 async def main():
- target=sys.argv[1]; base=urlsplit(target); target_port=base.port or 443; errors=[]; statuses=[]; request_count=[0]
+ target=sys.argv[1]; base=urlsplit(target); target_port=base.port or (443 if base.scheme == 'https' else 80); errors=[]; statuses=[]; request_count=[0]
  async with async_playwright() as p:
   browser=await p.chromium.launch(headless=True)
   context=await browser.new_context()
@@ -291,7 +292,7 @@ async def main():
    request_port=u.port or (443 if u.scheme == 'https' else 80)
    root=base.path.rstrip('/') or '/'
    request_count[0]+=1
-   if request_count[0] > 30 or route.request.resource_type in ('image','font','media') or u.scheme != 'https' or u.hostname != base.hostname or request_port != target_port or (root != '/' and not (u.path == root or u.path.startswith(root + '/'))):
+   if request_count[0] > 30 or route.request.method != 'GET' or route.request.resource_type in ('image','font','media') or u.scheme != base.scheme or u.hostname != base.hostname or request_port != target_port or (root != '/' and not (u.path == root or u.path.startswith(root + '/'))):
     await route.abort()
    else: await route.continue_()
   await context.route('**/*', guard)
@@ -316,7 +317,7 @@ def execute_framework_assessment(framework, target_url, *, openapi_url=None,
                                  max_p95_ms=1000, max_error_rate_percent=1.0,
                                  timeout_seconds=75):
     """Run a narrowly bounded target smoke/contract/load test and retain no raw output."""
-    binaries = {"playwright": "python", "schemathesis": "schemathesis", "k6": "k6"}
+    binaries = {"playwright": sys.executable, "schemathesis": "schemathesis", "k6": "k6"}
     binary = binaries.get(framework)
     if not binary or not shutil.which(binary):
         return {"status": "blocked_tool_not_installed", "framework": framework}
